@@ -1,0 +1,115 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobId:
+        description: 'ID job dari bot'
+        required: true
+      userId:
+        description: 'ID user Telegram'
+        required: false
+      payload:
+        description: 'Data build (JSON) dari bot'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Baca payload
+        id: p
+        env:
+          PAYLOAD: ${{ inputs.payload }}
+        run: |
+          echo "build_type=$(echo "$PAYLOAD" | jq -r '.buildType // "release"')" >> "$GITHUB_OUTPUT"
+          # zipAssetUrl = URL API asset release (perlu token); url = link publik browser_download_url (alur AMBIL_ALURGH)
+          echo "zip_url=$(echo "$PAYLOAD" | jq -r '.zipAssetUrl // .url // empty')" >> "$GITHUB_OUTPUT"
+          echo "zip_public=$(echo "$PAYLOAD" | jq -r '.url // empty')" >> "$GITHUB_OUTPUT"
+
+      - name: Unduh project ZIP
+        env:
+          # secret GH_TOKEN dipakai kalau ada; kalau repo dibuat manual tanpa secret, otomatis pakai token bawaan workflow
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          ASSET_URL: ${{ steps.p.outputs.zip_url }}
+          PUBLIC_URL: ${{ steps.p.outputs.zip_public }}
+        run: |
+          OK=0
+          if [ -n "$ASSET_URL" ]; then
+            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" "$ASSET_URL" -o project.zip && OK=1
+          fi
+          if [ "$OK" -ne 1 ] && [ -n "$PUBLIC_URL" ]; then
+            echo "Unduh via API gagal, coba link publik"
+            curl -fsSL "$PUBLIC_URL" -o project.zip && OK=1
+          fi
+          if [ "$OK" -ne 1 ]; then echo "Gagal mengunduh project ZIP (payload.zipAssetUrl / payload.url kosong atau tidak bisa diakses)"; exit 1; fi
+          mkdir -p src && unzip -q project.zip -d src
+
+      - name: Cari root project Android
+        id: root
+        run: |
+          SETTINGS=$(find src \( -name settings.gradle -o -name settings.gradle.kts \) -not -path '*/.*' | awk '{ print length, $0 }' | sort -n | head -1 | cut -d' ' -f2-)
+          if [ -z "$SETTINGS" ]; then echo "settings.gradle tidak ditemukan di ZIP"; exit 1; fi
+          echo "dir=$(dirname "$SETTINGS")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            11
+            17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK
+        working-directory: ${{ steps.root.outputs.dir }}
+        env:
+          BUILD_TYPE: ${{ steps.p.outputs.build_type }}
+        run: |
+          TASK=assembleRelease
+          if [ "$BUILD_TYPE" = "debug" ]; then TASK=assembleDebug; fi
+
+          # Pilih Java seperti worker VPS: Gradle < 7.6 pakai Java 11, selebihnya Java 17
+          WP=gradle/wrapper/gradle-wrapper.properties
+          [ -f "$WP" ] || WP=android/gradle/wrapper/gradle-wrapper.properties
+          JAVA_PICK="$JAVA_HOME_17_X64"
+          if [ -f "$WP" ] && [ -n "$JAVA_HOME_11_X64" ]; then
+            GV=$(grep 'distributionUrl' "$WP" | grep -oE 'gradle-[0-9]+\.[0-9]+' | head -1 | sed 's/gradle-//')
+            GM=${GV%%.*}; GN=${GV#*.}
+            if [ -n "$GM" ] && { [ "$GM" -lt 7 ] || { [ "$GM" -eq 7 ] && [ "${GN:-0}" -lt 6 ]; }; }; then JAVA_PICK="$JAVA_HOME_11_X64"; fi
+          fi
+          if [ -n "$JAVA_PICK" ]; then export JAVA_HOME="$JAVA_PICK"; export PATH="$JAVA_HOME/bin:$PATH"; fi
+          java -version
+
+          # Samakan dengan worker VPS: local.properties + pasang SDK/build-tools/NDK yang diminta project
+          if [ -n "$ANDROID_HOME" ]; then
+            echo "sdk.dir=$ANDROID_HOME" > local.properties
+            SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+            if [ -x "$SDKM" ]; then
+              CS=$(grep -RhoE 'compileSdk(Version)?[^0-9]*[0-9]+' . 2>/dev/null | grep -oE '[0-9]+$' | sort -nr | head -1 || true)
+              BT=$(grep -RhoE 'buildToolsVersion[^0-9]*[0-9.]+' . 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1 || true)
+              NDK=$(grep -RhoE 'ndkVersion[^0-9]*[0-9.]+' . 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1 || true)
+              [ -n "$CS" ]  && { [ -d "$ANDROID_HOME/platforms/android-$CS" ]  || yes | "$SDKM" "platforms;android-$CS" >/dev/null 2>&1 || true; }
+              [ -n "$BT" ]  && { [ -d "$ANDROID_HOME/build-tools/$BT" ]        || yes | "$SDKM" "build-tools;$BT" >/dev/null 2>&1 || true; }
+              [ -n "$NDK" ] && { [ -d "$ANDROID_HOME/ndk/$NDK" ]               || yes | "$SDKM" "ndk;$NDK" >/dev/null 2>&1 || true; }
+            fi
+          fi
+
+          touch gradle.properties
+          echo "org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8" >> gradle.properties
+          if [ -f ./gradlew ]; then chmod +x ./gradlew && ./gradlew "$TASK" --no-daemon; else gradle "$TASK" --no-daemon; fi
+
+      - name: Kumpulkan APK
+        run: |
+          mkdir -p out
+          cp "$(find "${{ steps.root.outputs.dir }}" -path '*outputs/apk*' -name '*.apk' | head -1)" out/app.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ inputs.jobId }}
+          path: out/app.apk
+          retention-days: 1
