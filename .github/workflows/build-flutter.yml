@@ -46,7 +46,7 @@ jobs:
           echo '${{ github.event.inputs.payload }}' > payload.json
           cat payload.json
 
-          # [bot-workflow] rev=2026-10-26.1 (disalin dari build.yml yang terbukti berhasil)
+          # [bot-workflow] rev=2026-10-27.1 (disalin dari build.yml yang terbukti berhasil)
           # Tipe build: payload.buildType dulu (dikirim bot), cadangan input build_type, default release
           BUILD_TYPE=$(jq -r '.buildType // empty' payload.json)
           [ -z "$BUILD_TYPE" ] && BUILD_TYPE="${{ github.event.inputs.build_type }}"
@@ -230,8 +230,25 @@ jobs:
             echo "✅ Web2APK project di-generate -> project_raw/$SAFE_NAME"
 
           else
-            PUBSPEC=$(find project_raw -type f -name pubspec.yaml \
-                      -not -path "*/build/*" -not -path "*/.dart_tool/*" | head -n 1)
+            # Pilih pubspec.yaml terbaik, bukan sekadar yang pertama ketemu: project ZIP sering
+            # berisi pubspec lain (package/plugin/example) yang tidak punya lib/main.dart.
+            # Skor: punya lib/main.dart (+400), punya folder android (+200), sdk flutter (+100),
+            # makin dangkal makin baik.
+            PUBSPEC=""
+            BEST=-100000
+            while IFS= read -r f; do
+              d=$(dirname "$f")
+              score=0
+              [ -f "$d/lib/main.dart" ] && score=$((score+400))
+              [ -d "$d/android" ] && score=$((score+200))
+              grep -q 'sdk: flutter' "$f" 2>/dev/null && score=$((score+100))
+              depth=$(printf '%s' "$d" | tr -cd '/' | wc -c)
+              score=$((score-depth))
+              echo "kandidat pubspec: $f (skor $score)"
+              if [ "$score" -gt "$BEST" ]; then BEST=$score; PUBSPEC="$f"; fi
+            done < <(find project_raw -type f -name pubspec.yaml \
+                      -not -path "*/build/*" -not -path "*/.dart_tool/*" \
+                      -not -path "*/.symlinks/*" -not -path "*/ephemeral/*")
             GRADLEW=$(find project_raw -type f -name gradlew \
                       -not -path "*/build/*" | head -n 1)
             SETTINGS=$(find project_raw -type f \
@@ -321,7 +338,26 @@ jobs:
           flutter config --no-analytics >/dev/null 2>&1 || true
           [ "$MODE" != "url" ] && flutter pub get
           BT="$BUILD_TYPE"
-          flutter build apk --$BT \
+
+          # Entry point: pakai lib/main.dart kalau ada; kalau tidak, cari file lain yang punya main()
+          TARGET_ARGS=""
+          if [ ! -f lib/main.dart ]; then
+            ALT=$(ls lib/main_*.dart lib/*/main.dart 2>/dev/null | head -n 1 || true)
+            if [ -z "$ALT" ] && [ -d lib ]; then
+              ALT=$(grep -rlE '^[[:space:]]*(void|Future<void>)[[:space:]]+main[[:space:]]*\(' lib --include='*.dart' 2>/dev/null | head -n 1 || true)
+            fi
+            if [ -n "$ALT" ]; then
+              echo "ℹ️ lib/main.dart tidak ada, memakai entry point: $ALT"
+              TARGET_ARGS="-t $ALT"
+            else
+              echo "::error::Target file \"lib/main.dart\" not found. Tidak ada file Dart dengan fungsi main() di $(pwd)."
+              echo "=== Isi folder project ==="; ls -la
+              echo "=== Isi lib/ ==="; ls -la lib 2>/dev/null || echo "(folder lib tidak ada)"
+              exit 1
+            fi
+          fi
+
+          flutter build apk --$BT $TARGET_ARGS \
             --target-platform=$TARGET_PLATFORMS \
             --no-tree-shake-icons \
             --no-shrink \
