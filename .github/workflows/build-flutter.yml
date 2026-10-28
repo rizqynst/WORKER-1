@@ -40,13 +40,27 @@ jobs:
       GRADLE_ABIS: armeabi-v7a,arm64-v8a
 
     steps:
+      - name: Free disk space
+        run: |
+          # Runner ubuntu-latest hanya punya ~14 GB bebas. Flutter + Gradle (transform jar armeabi/arm64) + cache
+          # bisa menghabiskannya -> "No space left on device". Hapus paket besar yang tidak dipakai build ini.
+          # JANGAN hapus /usr/local/lib/android (Android SDK dibutuhkan build).
+          echo "Sebelum:"; df -h / | tail -n 1
+          sudo rm -rf /usr/share/dotnet /usr/local/share/powershell /usr/local/share/chromium \
+                      /usr/local/share/boost /opt/ghc /usr/local/.ghcup /usr/share/swift \
+                      /opt/hostedtoolcache/CodeQL /opt/microsoft /opt/az /usr/lib/google-cloud-sdk \
+                      /usr/lib/mono /usr/local/julia* 2>/dev/null || true
+          sudo apt-get clean >/dev/null 2>&1 || true
+          docker system prune -af >/dev/null 2>&1 || true
+          echo "Sesudah:"; df -h / | tail -n 1
+
       - name: Parse payload
         run: |
           set -euo pipefail
           echo '${{ github.event.inputs.payload }}' > payload.json
           cat payload.json
 
-          # [bot-workflow] rev=2026-10-27.1 (disalin dari build.yml yang terbukti berhasil)
+          # [bot-workflow] rev=2026-10-27.2 (tambah Free disk space: runner kehabisan disk saat mergeReleaseNativeLibs)
           # Tipe build: payload.buildType dulu (dikirim bot), cadangan input build_type, default release
           BUILD_TYPE=$(jq -r '.buildType // empty' payload.json)
           [ -z "$BUILD_TYPE" ] && BUILD_TYPE="${{ github.event.inputs.build_type }}"
