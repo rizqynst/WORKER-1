@@ -1,5 +1,7 @@
 name: Build APK (Flutter / Gradle / Web2APK Auto)
 
+run-name: Build ${{ github.event.inputs.jobId }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -60,7 +62,7 @@ jobs:
           echo '${{ github.event.inputs.payload }}' > payload.json
           cat payload.json
 
-          # [bot-workflow] rev=2026-10-27.2 (tambah Free disk space: runner kehabisan disk saat mergeReleaseNativeLibs)
+          # [bot-workflow] rev=2026-11-01.2 (samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; sebelumnya 2026-10-27.2 tambah Free disk space)
           # Tipe build: payload.buildType dulu (dikirim bot), cadangan input build_type, default release
           BUILD_TYPE=$(jq -r '.buildType // empty' payload.json)
           [ -z "$BUILD_TYPE" ] && BUILD_TYPE="${{ github.event.inputs.build_type }}"
@@ -105,52 +107,49 @@ jobs:
           rm -rf project_raw project.zip
           mkdir -p project_raw
 
-          ZIP_API_URL=$(jq -r '.zipAssetUrl // empty' payload.json)
-          ASSET_ID=$(jq -r '.assetId // empty' payload.json)
           TAG=$(jq -r '.tag // empty' payload.json)
           PUBLIC_URL=$(jq -r '.url // empty' payload.json)
 
-          # Cari asset lewat tag release kalau URL API belum ada (aman untuk repo private)
-          if [ -z "$ZIP_API_URL" ] && [ -z "$ASSET_ID" ] && [ -n "$TAG" ]; then
-            echo "Mencari asset lewat tag $TAG ..."
+          OK=0
+          # 1) Link publik dari payload.url (jalur sama seperti AMBIL_ALURGH)
+          if [ -n "$PUBLIC_URL" ]; then
+            echo "Unduh via link publik..."
+            if curl -fL --retry 3 --retry-delay 5 -o project.zip "$PUBLIC_URL" && [ -s project.zip ]; then OK=1; fi
+          fi
+          # 2) Cadangan: cari asset lewat tag release + token (repo private)
+          if [ "$OK" != "1" ] && [ -n "$TAG" ]; then
+            echo "Cari asset lewat tag $TAG ..."
             ASSET_ID=$(curl -fsSL --retry 3 --retry-delay 3 \
               -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
-              | jq -r '[.assets[] | select(.name=="project.zip")][0].id // empty' || true)
-          fi
-          if [ -z "$ZIP_API_URL" ] && [ -n "$ASSET_ID" ]; then
-            ZIP_API_URL="https://api.github.com/repos/${REPO}/releases/assets/${ASSET_ID}"
-          fi
-
-          OK=0
-          # 1) URL API asset + token (jalur utama, jalan untuk repo private maupun public)
-          if [ -n "$ZIP_API_URL" ]; then
-            echo "Unduh via API asset..."
-            if curl -fL --retry 3 --retry-delay 5 \
-                 -H "Authorization: Bearer ${GH_TOKEN}" \
-                 -H "Accept: application/octet-stream" \
-                 -o project.zip "$ZIP_API_URL"; then OK=1; fi
-          fi
-          # 2) Link publik / browser_download_url (cadangan; pakai token kalau host github.com)
-          if [ "$OK" != "1" ] && [ -n "$PUBLIC_URL" ]; then
-            echo "Unduh via link publik..."
-            if [[ "$PUBLIC_URL" == *"github.com"* || "$PUBLIC_URL" == *"api.github.com"* ]]; then
-              curl -fL --retry 3 --retry-delay 5 \
-                -H "Authorization: Bearer ${GH_TOKEN}" \
-                -H "Accept: application/octet-stream" \
-                -o project.zip "$PUBLIC_URL" && OK=1
-            else
-              curl -fL --retry 3 --retry-delay 5 -o project.zip "$PUBLIC_URL" && OK=1
+              | jq -r '.assets[0].id // empty' || true)
+            if [ -n "$ASSET_ID" ]; then
+              if curl -fL --retry 3 --retry-delay 5 \
+                   -H "Authorization: Bearer ${GH_TOKEN}" \
+                   -H "Accept: application/octet-stream" \
+                   -o project.zip "https://api.github.com/repos/${REPO}/releases/assets/${ASSET_ID}" \
+                 && [ -s project.zip ]; then OK=1; fi
             fi
           fi
           if [ "$OK" != "1" ]; then
-            echo "::error::Gagal mengunduh ZIP project (API=$ZIP_API_URL, url=$PUBLIC_URL, tag=$TAG)"
+            echo "::error::Gagal mengunduh ZIP project (url=$PUBLIC_URL, tag=$TAG)"
             exit 22
           fi
 
           ls -lh project.zip
-          unzip -q project.zip -d project_raw
+          # Ekstrak: unzip dulu, kalau gagal / hasil kosong coba 7z. Jangan lanjut kalau kosong.
+          unzip -o -q project.zip -d project_raw || true
+          if [ -z "$(find project_raw -type f | head -n 1)" ]; then
+            echo "unzip tidak menghasilkan file, coba 7z..."
+            (command -v 7z >/dev/null 2>&1 || sudo apt-get install -y -qq p7zip-full >/dev/null 2>&1) || true
+            7z x -y -oproject_raw project.zip >/dev/null 2>&1 || true
+          fi
+          if [ -z "$(find project_raw -type f | head -n 1)" ]; then
+            echo "::error::ZIP kosong / gagal diekstrak (ukuran: $(stat -c%s project.zip) byte)"
+            unzip -l project.zip 2>&1 | head -20 || true
+            exit 1
+          fi
 
           echo "=== Struktur root project_raw ==="
           find project_raw -maxdepth 3 -type d | head -50
