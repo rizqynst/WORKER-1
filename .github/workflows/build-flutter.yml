@@ -304,6 +304,7 @@ jobs:
           fi
           mkdir -p "$(dirname "$GP")"
           touch "$GP"
+          sed -i '/kotlin.jvm.target.validation.mode/d' "$GP" || true
           sed -i '/org.gradle.jvmargs/d;/org.gradle.parallel/d;/org.gradle.caching/d;/org.gradle.daemon/d;/org.gradle.configureondemand/d;/org.gradle.workers.max/d' "$GP" || true
           {
             echo ""
@@ -313,6 +314,7 @@ jobs:
             echo "org.gradle.daemon=false"
             echo "org.gradle.configureondemand=true"
             echo "org.gradle.workers.max=4"
+            echo "kotlin.jvm.target.validation.mode=warning"
           } >> "$GP"
 
       - name: Speed up Gradle (skip lintVital)
