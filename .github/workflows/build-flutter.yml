@@ -294,6 +294,51 @@ jobs:
             fi
           fi
 
+      - name: Sanitize Android PNG resources
+        run: |
+          set +e
+          DIR="${{ steps.detect.outputs.dir }}"
+          if command -v magick >/dev/null 2>&1; then IM="magick"; elif command -v convert >/dev/null 2>&1; then IM="convert"; else IM=""; fi
+          if [ -z "$IM" ]; then echo "ImageMagick tidak ada, lewati sanitasi PNG"; exit 0; fi
+          FIXED=0; BAD=0
+          while IFS= read -r f; do
+            case "$f" in *.9.png) continue;; esac
+            # Re-encode ke PNG 8-bit RGBA non-interlaced (isi file dibaca dari konten, bukan ekstensi)
+            if $IM "$f" -strip -depth 8 -interlace none -define png:color-type=6 "PNG32:$f.fixed" 2>/dev/null && [ -s "$f.fixed" ]; then
+              mv -f "$f.fixed" "$f"; FIXED=$((FIXED+1))
+            else
+              rm -f "$f.fixed"; BAD=$((BAD+1))
+              echo "⚠️ PNG tidak bisa dibaca, diganti ikon polos: $f"
+              SZ=96; case "$f" in *mipmap-mdpi*) SZ=48;; *mipmap-hdpi*) SZ=72;; *mipmap-xhdpi*) SZ=96;; *mipmap-xxhdpi*) SZ=144;; *mipmap-xxxhdpi*) SZ=192;; esac
+              case "$(basename "$f")" in
+                ic_launcher*) $IM -size ${SZ}x${SZ} xc:'#2196F3' "PNG32:$f" ;;
+                *) rm -f "$f" ;;
+              esac
+            fi
+          done < <(find "$DIR" -type f -iname '*.png' -path '*/src/main/res/*' \( -path '*/mipmap*' -o -path '*/drawable*' \) -not -path '*/build/*' 2>/dev/null)
+          echo "✅ Sanitasi PNG resource: $FIXED diperbaiki, $BAD tidak terbaca"
+          exit 0
+
+      - name: Validate Flutter Android-only ZIP
+        if: steps.detect.outputs.type == 'gradle'
+        run: |
+          set +e
+          DIR="${{ steps.detect.outputs.dir }}"
+          SET=$(ls "$DIR"/settings.gradle.kts "$DIR"/settings.gradle 2>/dev/null | head -n 1)
+          if [ -n "$SET" ] && grep -qE 'flutter-plugin-loader|flutter\.sdk|flutter_tools' "$SET"; then
+            echo "Terdeteksi: ini folder android dari project Flutter, tetapi tidak ada pubspec.yaml di ZIP."
+            # local.properties bawaan laptop (mis. /opt/homebrew/..., C:\\...) tidak berlaku di runner
+            rm -f "$DIR/local.properties"
+            echo "::error::ZIP hanya berisi folder android dari project Flutter (tidak ada pubspec.yaml dan lib/). APK tidak bisa dibuat tanpa kode Dart-nya. Kirim ZIP project Flutter yang lengkap (folder yang berisi pubspec.yaml, lib/, android/)."
+            exit 1
+          fi
+          # Project native biasa: buang local.properties dari laptop pembuat ZIP, tulis ulang untuk runner
+          if [ -f "$DIR/local.properties" ]; then
+            rm -f "$DIR/local.properties"
+          fi
+          echo "sdk.dir=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" > "$DIR/local.properties"
+          echo "✅ local.properties disesuaikan untuk runner"
+
       - name: Tune gradle.properties
         run: |
           set -euo pipefail
