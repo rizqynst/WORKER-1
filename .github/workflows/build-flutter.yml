@@ -34,8 +34,7 @@ jobs:
       GRADLE_OPTS: >-
         -Dorg.gradle.daemon=false
         -Dorg.gradle.parallel=true
-        -Dorg.gradle.caching=true
-        -Dorg.gradle.configureondemand=true
+        -Dorg.gradle.caching=false
         -Dorg.gradle.workers.max=4
         -Dorg.gradle.jvmargs=-Xmx3g
       TARGET_PLATFORMS: android-arm,android-arm64
@@ -172,23 +171,7 @@ jobs:
         with:
           flutter-version: '3.38.0'
           channel: stable
-          cache: true
-
-      - name: Cache pub packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.pub-cache
-          key: pub-${{ runner.os }}-${{ hashFiles('project_raw/**/pubspec.lock') }}
-          restore-keys: pub-${{ runner.os }}-
-
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('project_raw/**/*.gradle*', 'project_raw/**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
+          cache: false
 
       - name: Detect / Generate project
         id: detect
@@ -339,6 +322,21 @@ jobs:
           echo "sdk.dir=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" > "$DIR/local.properties"
           echo "✅ local.properties disesuaikan untuk runner"
 
+      - name: Clean stale artifacts from ZIP (build dari nol)
+        run: |
+          set +e
+          DIR="${{ steps.detect.outputs.dir }}"
+          echo "Bersihkan sisa build bawaan ZIP di: $DIR"
+          # Hanya folder hasil build di lokasi standar (jangan hapus folder source bernama "build")
+          for d in "$DIR/build" "$DIR/.dart_tool" "$DIR/.gradle" "$DIR/android/.gradle" \
+                   "$DIR/android/build" "$DIR/android/app/build" "$DIR/.gradle" "$DIR/ios/Pods"; do
+            [ -d "$d" ] && { echo "hapus $d"; rm -rf "$d"; }
+          done
+          rm -f "$DIR/.flutter-plugins" "$DIR/.flutter-plugins-dependencies" "$DIR/.packages" "$DIR/pubspec.lock.bak" 2>/dev/null
+          rm -rf "$HOME/.gradle/caches" "$HOME/.gradle/daemon" 2>/dev/null
+          echo "✅ Bersih. Build jalan tanpa cache."
+          exit 0
+
       - name: Tune gradle.properties
         run: |
           set -euo pipefail
@@ -355,9 +353,8 @@ jobs:
             echo ""
             echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g"
             echo "org.gradle.parallel=true"
-            echo "org.gradle.caching=true"
+            echo "org.gradle.caching=false"
             echo "org.gradle.daemon=false"
-            echo "org.gradle.configureondemand=true"
             echo "org.gradle.workers.max=4"
             echo "kotlin.jvm.target.validation.mode=warning"
           } >> "$GP"
@@ -448,7 +445,7 @@ jobs:
 
           echo "Running: $CMD $TASK"
           $CMD "$TASK" \
-            --parallel --build-cache \
+            --parallel --no-build-cache \
             -Pandroid.injected.build.abi=$GRADLE_ABIS 2>&1 | tee build.log || {
               echo "::error::Build gagal. Cek log di atas."
               tail -100 build.log
