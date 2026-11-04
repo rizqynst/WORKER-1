@@ -1,4 +1,5 @@
 name: Build Android APK
+run-name: Build ${{ github.event.inputs.jobId }}
 
 on:
   workflow_dispatch:
@@ -30,24 +31,58 @@ jobs:
           # zipAssetUrl = URL API asset release (perlu token); url = link publik browser_download_url (alur AMBIL_ALURGH)
           echo "zip_url=$(echo "$PAYLOAD" | jq -r '.zipAssetUrl // .url // empty')" >> "$GITHUB_OUTPUT"
           echo "zip_public=$(echo "$PAYLOAD" | jq -r '.url // empty')" >> "$GITHUB_OUTPUT"
+          echo "tag=$(echo "$PAYLOAD" | jq -r '.tag // empty')" >> "$GITHUB_OUTPUT"
+          REQ=$(echo "$PAYLOAD" | jq -r '.projectType // empty')
+          if [ "$REQ" = "flutter" ]; then
+            echo "::error::Workflow ini khusus GENETIC (Android native). Mode yang dipilih KHUSUS APK BIASA (Flutter), seharusnya memakai workflow Flutter."
+            exit 1
+          fi
 
       - name: Unduh project ZIP
         env:
           # secret GH_TOKEN dipakai kalau ada; kalau repo dibuat manual tanpa secret, otomatis pakai token bawaan workflow
           GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
           ASSET_URL: ${{ steps.p.outputs.zip_url }}
           PUBLIC_URL: ${{ steps.p.outputs.zip_public }}
+          TAG: ${{ steps.p.outputs.tag }}
         run: |
+          set +e
           OK=0
-          if [ -n "$ASSET_URL" ]; then
-            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" "$ASSET_URL" -o project.zip && OK=1
+          # 1) URL API asset + token (jalan untuk repo private maupun public)
+          if [ -n "$ASSET_URL" ] && echo "$ASSET_URL" | grep -q 'api.github.com'; then
+            curl -fsSL --retry 3 --retry-delay 5 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" "$ASSET_URL" -o project.zip && [ -s project.zip ] && OK=1
           fi
+          # 2) Cari asset lewat tag release + token
+          if [ "$OK" -ne 1 ] && [ -n "$TAG" ]; then
+            echo "Cari asset lewat tag $TAG ..."
+            ASSET_ID=$(curl -fsSL --retry 3 --retry-delay 3 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" | jq -r '.assets[0].id // empty')
+            if [ -n "$ASSET_ID" ]; then
+              curl -fsSL --retry 3 --retry-delay 5 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" "https://api.github.com/repos/${REPO}/releases/assets/${ASSET_ID}" -o project.zip && [ -s project.zip ] && OK=1
+            fi
+          fi
+          # 3) Cadangan: link publik (tanpa token)
           if [ "$OK" -ne 1 ] && [ -n "$PUBLIC_URL" ]; then
             echo "Unduh via API gagal, coba link publik"
-            curl -fsSL "$PUBLIC_URL" -o project.zip && OK=1
+            curl -fsSL --retry 3 --retry-delay 5 "$PUBLIC_URL" -o project.zip && [ -s project.zip ] && OK=1
           fi
-          if [ "$OK" -ne 1 ]; then echo "Gagal mengunduh project ZIP (payload.zipAssetUrl / payload.url kosong atau tidak bisa diakses)"; exit 1; fi
+          if [ "$OK" -ne 1 ]; then echo "Gagal mengunduh project ZIP (url=$PUBLIC_URL, tag=$TAG)"; exit 1; fi
+          set -e
           mkdir -p src && unzip -q project.zip -d src
+          # ZIP di dalam ZIP: sama seperti worker VPS, SEMUA zip di dalam dibuka dulu (maksimal 3 putaran).
+          for ROUND in 1 2 3; do
+            NESTED=$(find src -type f -iname '*.zip')
+            if [ -z "$NESTED" ]; then break; fi
+            FOUND=0
+            echo "Buka ZIP di dalam ZIP (putaran $ROUND dari 3) ..."
+            while IFS= read -r Z; do
+              [ -n "$Z" ] || continue
+              D="${Z%.*}"
+              mkdir -p "$D"
+              if unzip -o -q "$Z" -d "$D"; then rm -f "$Z"; FOUND=1; else rm -rf "$D"; fi
+            done <<< "$NESTED"
+            [ "$FOUND" -eq 1 ] || break
+          done
 
       - name: Cari root project Android
         id: root
@@ -55,6 +90,14 @@ jobs:
           SETTINGS=$(find src \( -name settings.gradle -o -name settings.gradle.kts \) -not -path '*/.*' | awk '{ print length, $0 }' | sort -n | head -1 | cut -d' ' -f2-)
           if [ -z "$SETTINGS" ]; then echo "settings.gradle tidak ditemukan di ZIP"; exit 1; fi
           echo "dir=$(dirname "$SETTINGS")" >> "$GITHUB_OUTPUT"
+          if grep -qE 'flutter-plugin-loader|flutter\.sdk|flutter_tools' "$SETTINGS"; then
+            if find src -type f -name pubspec.yaml -not -path '*/build/*' | head -n 1 | grep -q .; then
+              echo "::error::Ini project Flutter (ada pubspec.yaml) tapi dibangun lewat mode Android native. Build ulang dengan mode Flutter."
+            else
+              echo "::error::ZIP hanya berisi folder android dari project Flutter (tidak ada pubspec.yaml dan lib/). Kirim ZIP project Flutter yang lengkap."
+            fi
+            exit 1
+          fi
 
       - uses: actions/setup-java@v4
         with:
@@ -100,7 +143,10 @@ jobs:
           fi
 
           touch gradle.properties
+          sed -i '/kotlin.jvm.target.validation.mode/d' gradle.properties || true
           echo "org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8" >> gradle.properties
+          # Java target 1.8 vs Kotlin 17 hanya jadi peringatan, bukan error
+          echo "kotlin.jvm.target.validation.mode=warning" >> gradle.properties
           if [ -f ./gradlew ]; then chmod +x ./gradlew && ./gradlew "$TASK" --no-daemon; else gradle "$TASK" --no-daemon; fi
 
       - name: Kumpulkan APK
