@@ -31,28 +31,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      GRADLE_OPTS: >-
-        -Dorg.gradle.daemon=false
-        -Dorg.gradle.parallel=true
-        -Dorg.gradle.caching=false
-        -Dorg.gradle.workers.max=4
-        -Dorg.gradle.jvmargs=-Xmx3g
       TARGET_PLATFORMS: android-arm,android-arm64
 
     steps:
-      - name: Free disk space
+      - name: Free disk space (background)
         run: |
-          # Runner ubuntu-latest hanya punya ~14 GB bebas. Flutter + Gradle (transform jar armeabi/arm64) + cache
-          # bisa menghabiskannya -> "No space left on device". Hapus paket besar yang tidak dipakai build ini.
-          # JANGAN hapus /usr/local/lib/android (Android SDK dibutuhkan build).
-          echo "Sebelum:"; df -h / | tail -n 1
-          sudo rm -rf /usr/share/dotnet /usr/local/share/powershell /usr/local/share/chromium \
-                      /usr/local/share/boost /opt/ghc /usr/local/.ghcup /usr/share/swift \
-                      /opt/hostedtoolcache/CodeQL /opt/microsoft /opt/az /usr/lib/google-cloud-sdk \
-                      /usr/lib/mono /usr/local/julia* 2>/dev/null || true
-          sudo apt-get clean >/dev/null 2>&1 || true
-          docker system prune -af >/dev/null 2>&1 || true
-          echo "Sesudah:"; df -h / | tail -n 1
+          # Dulu langkah ini memblokir 1-2 menit. Sekarang rm jalan di background, dan build baru menunggu
+          # penanda selesai tepat sebelum Gradle jalan. JANGAN hapus /usr/local/lib/android (SDK dipakai build).
+          df -h / | tail -n 1
+          rm -f /tmp/free_disk_done
+          nohup bash -c '
+            sudo rm -rf /usr/share/dotnet /usr/local/share/powershell /usr/local/share/chromium \
+                        /usr/local/share/boost /opt/ghc /usr/local/.ghcup /usr/share/swift \
+                        /opt/hostedtoolcache/CodeQL /opt/microsoft /opt/az /usr/lib/google-cloud-sdk \
+                        /usr/lib/mono /usr/local/julia* 2>/dev/null
+            sudo apt-get clean >/dev/null 2>&1
+            docker system prune -af >/dev/null 2>&1
+            touch /tmp/free_disk_done
+          ' >/dev/null 2>&1 &
+          disown || true
 
       - name: Parse payload
         run: |
@@ -60,7 +57,7 @@ jobs:
           echo '${{ github.event.inputs.payload }}' > payload.json
           cat payload.json
 
-          # [bot-workflow] rev=2026-11-04.3 (KHUSUS APK BIASA: cabang Gradle native/Genetic dihapus total dari workflow ini, Genetic hanya di build-android.yml; alur dispatch/payload/unduh ZIP/artifact apk-jobId mengikuti AMBIL_ALURGH; sebelumnya 2026-11-04.2 jalur dipisah via payload.projectType; 2026-11-04.1 alur Flutter mode ZIP disamakan dengan worker VPS; 2026-11-01.2 samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; 2026-10-27.2 tambah Free disk space)
+          # [bot-workflow] rev=2026-11-04.4 (build cepat: Flutter 1 keputusan tanpa uji satu-satu, build ZIP pakai jalur cepat 2 ABI + Gradle paralel; sebelumnya 2026-11-04.3: KHUSUS APK BIASA: cabang Gradle native/Genetic dihapus total dari workflow ini, Genetic hanya di build-android.yml; alur dispatch/payload/unduh ZIP/artifact apk-jobId mengikuti AMBIL_ALURGH; sebelumnya 2026-11-04.2 jalur dipisah via payload.projectType; 2026-11-04.1 alur Flutter mode ZIP disamakan dengan worker VPS; 2026-11-01.2 samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; 2026-10-27.2 tambah Free disk space)
           # Tipe build: payload.buildType dulu (dikirim bot), cadangan input build_type, default release
           BUILD_TYPE=$(jq -r '.buildType // empty' payload.json)
           [ -z "$BUILD_TYPE" ] && BUILD_TYPE="${{ github.event.inputs.build_type }}"
@@ -283,7 +280,7 @@ jobs:
             echo "✅ Flutter project → $DIR"
           fi
 
-      - name: Pilih versi Flutter sesuai project (alur VPS)
+      - name: Pilih versi Flutter (1 keputusan, tanpa uji satu-satu)
         id: fv
         if: env.MODE != 'url'
         env:
@@ -293,6 +290,7 @@ jobs:
           const fs = require('fs');
           const https = require('https');
           const FALLBACK = '3.38.0';
+          const FALLBACK_DART = '3.10.0'; // Dart bawaan Flutter 3.38.0, dipakai supaya kasus umum tidak perlu unduh katalog rilis
           const out = (v) => fs.appendFileSync(process.env.GITHUB_OUTPUT, 'version=' + v + '\n');
           const dir = process.env.PROJ_DIR || '.';
           let text = '';
@@ -336,10 +334,14 @@ jobs:
           }
           (async () => {
             console.log('pubspec environment: sdk="' + dartRange + '" flutter="' + flutterRange + '"');
+            // Jalur cepat: versi default cocok -> selesai, tanpa fetch katalog dan tanpa menimbang versi lain.
+            if (satisfies(FALLBACK_DART, dartRange) && satisfies(FALLBACK, flutterRange)) { console.log('Flutter default ' + FALLBACK + ' cocok (jalur cepat)'); out(FALLBACK); return; }
             const raw = process.env.FLUTTER_RELEASES_FILE
               ? fs.readFileSync(process.env.FLUTTER_RELEASES_FILE, 'utf8')
               : await get('https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json');
-            const stable = (JSON.parse(raw).releases || []).filter((r) => r.channel === 'stable' && r.archive && r.version);
+            // Lantai versi: jangan pernah di bawah FALLBACK (Dart 3.10). Package terbaru (mis. path_provider >=2.1.6) butuh Dart ^3.10.0,
+            // jadi Flutter lama yang cocok dengan batas atas pubspec justru membuat "version solving failed".
+            const stable = (JSON.parse(raw).releases || []).filter((r) => r.channel === 'stable' && r.archive && r.version && cmp(ver(r.version), ver(FALLBACK)) >= 0);
             stable.sort((a, b) => String(b.release_date || '').localeCompare(String(a.release_date || '')));
             const fits = (r) => (!dartRange || !r.dart_sdk_version || satisfies(r.dart_sdk_version, dartRange)) && (!flutterRange || satisfies(r.version, flutterRange));
             // Urutan sama dengan VPS: versi default dipakai kalau cocok, kalau tidak yang stable terbaru yang cocok.
@@ -347,7 +349,7 @@ jobs:
             if (def && fits(def)) { console.log('Flutter default ' + FALLBACK + ' cocok'); out(FALLBACK); return; }
             const pick = stable.find(fits);
             if (pick) { console.log('Flutter dipilih: ' + pick.version + ' (dart ' + pick.dart_sdk_version + ')'); out(pick.version); return; }
-            console.log('::warning::Tidak ada Flutter stable yang cocok dengan pubspec, pakai ' + FALLBACK);
+            console.log('::warning::Tidak ada Flutter stable >= ' + FALLBACK + ' yang cocok dengan batas pubspec (sdk="' + dartRange + '"), pakai ' + FALLBACK + ' (batas atas SDK diabaikan)');
             out(FALLBACK);
           })().catch((e) => { console.log('::warning::Gagal memilih versi Flutter (' + e.message + '), pakai ' + FALLBACK); out(FALLBACK); });
           NODE
@@ -401,23 +403,31 @@ jobs:
           exit 0
 
       - name: Tune gradle.properties
-        if: env.MODE != 'zip'
         run: |
           set -euo pipefail
           GP="${{ steps.detect.outputs.dir }}/android/gradle.properties"
           mkdir -p "$(dirname "$GP")"
           touch "$GP"
           sed -i '/kotlin.jvm.target.validation.mode/d' "$GP" || true
+          sed -i '/# >>> DEY BUILD WORKER >>>/,/# <<< DEY BUILD WORKER <<</d;/# >>> RIZQY BUILD WORKER >>>/,/# <<< RIZQY BUILD WORKER <<</d' "$GP" || true
           sed -i '/org.gradle.jvmargs/d;/org.gradle.parallel/d;/org.gradle.caching/d;/org.gradle.daemon/d;/org.gradle.configureondemand/d;/org.gradle.workers.max/d' "$GP" || true
+          RAM_MB=$(free -m | awk '/^Mem:/{print $2}'); RAM_MB=${RAM_MB:-7000}
+          CPUS=$(nproc 2>/dev/null || echo 2)
+          if   [ "$RAM_MB" -lt 6144 ];  then XMX=2048; elif [ "$RAM_MB" -lt 10240 ]; then XMX=3072; else XMX=4096; fi
+          WORKERS=$CPUS; [ "$WORKERS" -gt 4 ] && WORKERS=4
           {
             echo ""
-            echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g"
+            echo "org.gradle.jvmargs=-Xmx${XMX}m -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8"
             echo "org.gradle.parallel=true"
             echo "org.gradle.caching=false"
             echo "org.gradle.daemon=false"
-            echo "org.gradle.workers.max=4"
+            echo "org.gradle.workers.max=$WORKERS"
             echo "kotlin.jvm.target.validation.mode=warning"
           } >> "$GP"
+          # useAndroidX hanya ditambah kalau project tidak punya; Jetifier TIDAK dipaksa (memperlambat, project yang butuh sudah menyetel sendiri)
+          grep -q '^android.useAndroidX' "$GP" || echo "android.useAndroidX=true" >> "$GP"
+          echo "RAM=${RAM_MB}MB CPU=${CPUS} Xmx=${XMX}m workers=${WORKERS}"
+          echo "GRADLE_XMX=$XMX" >> "$GITHUB_ENV"
 
       - name: Speed up Gradle (skip lintVital)
         run: |
@@ -428,7 +438,6 @@ jobs:
           cat "$HOME/.gradle/init.d/fastbuild.gradle"
 
       - name: Use preinstalled NDK (skip download)
-        if: env.MODE == 'url'
         working-directory: ${{ steps.detect.outputs.dir }}
         run: |
           set -euo pipefail
@@ -448,50 +457,13 @@ jobs:
           echo "ℹ️ Baris 'ndkVersion = flutter.ndkVersion' gak ketemu -- dilewati."
 
       - name: Build Flutter APK
-        if: env.MODE != 'zip'
-        working-directory: ${{ steps.detect.outputs.dir }}
-        run: |
-          set -euo pipefail
-          flutter config --no-analytics >/dev/null 2>&1 || true
-          [ "$MODE" != "url" ] && flutter pub get
-          BT="$BUILD_TYPE"
-
-          # Entry point: pakai lib/main.dart kalau ada; kalau tidak, cari file lain yang punya main()
-          TARGET_ARGS=""
-          if [ ! -f lib/main.dart ]; then
-            ALT=$(ls lib/main_*.dart lib/*/main.dart 2>/dev/null | head -n 1 || true)
-            if [ -z "$ALT" ] && [ -d lib ]; then
-              ALT=$(grep -rlE '^[[:space:]]*(void|Future<void>)[[:space:]]+main[[:space:]]*\(' lib --include='*.dart' 2>/dev/null | head -n 1 || true)
-            fi
-            if [ -n "$ALT" ]; then
-              echo "ℹ️ lib/main.dart tidak ada, memakai entry point: $ALT"
-              TARGET_ARGS="-t $ALT"
-            else
-              echo "::error::Target file \"lib/main.dart\" not found. Tidak ada file Dart dengan fungsi main() di $(pwd)."
-              echo "=== Isi folder project ==="; ls -la
-              echo "=== Isi lib/ ==="; ls -la lib 2>/dev/null || echo "(folder lib tidak ada)"
-              exit 1
-            fi
-          fi
-
-          flutter build apk --$BT $TARGET_ARGS \
-            --target-platform=$TARGET_PLATFORMS \
-            --no-tree-shake-icons \
-            --no-shrink \
-            --no-pub 2>&1 | tee build.log
-
-      - name: Build Flutter APK (alur VPS)
-        if: env.MODE == 'zip'
         working-directory: ${{ steps.detect.outputs.dir }}
         run: |
           set -euo pipefail
           export BOT=true
-          # Samakan dengan worker VPS (worker/pipeline/flutter.js): jangan pakai GRADLE_OPTS milik job, konfigurasi Gradle
-          # diatur lewat blok worker di android/gradle.properties seperti di VPS.
-          unset GRADLE_OPTS
           BT="$BUILD_TYPE"
 
-          # 1) Pilih Java: 17, kecuali Gradle project < 7.6 memakai Java 11 (sama seperti VPS)
+          # 1) Java 17, kecuali Gradle project < 7.6 memakai Java 11
           WRAPPER_PROPS="android/gradle/wrapper/gradle-wrapper.properties"
           [ -f "$WRAPPER_PROPS" ] || WRAPPER_PROPS="gradle/wrapper/gradle-wrapper.properties"
           JAVA_PICK="${JAVA_HOME_17_X64:-$JAVA_HOME}"
@@ -503,16 +475,16 @@ jobs:
           export JAVA_HOME="$JAVA_PICK"; export PATH="$JAVA_HOME/bin:$PATH"
           flutter config --no-analytics >/dev/null 2>&1 || true
           flutter config --jdk-dir "$JAVA_HOME" >/dev/null 2>&1 || true
-          echo "[alur VPS] Java: $JAVA_HOME (gradle wrapper: ${GV:-?})"
+          echo "Java: $JAVA_HOME (gradle wrapper: ${GV:-?})"
 
-          # 2) Android SDK + pasang compileSdk/build-tools/NDK yang diminta project (additif, tidak mengubah file Gradle)
+          # 2) Android SDK: pasang HANYA compileSdk/build-tools/NDK eksplisit yang diminta project dan belum ada
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           if [ -n "$SDK" ]; then
             export ANDROID_HOME="$SDK" ANDROID_SDK_ROOT="$SDK"
             export PATH="$PATH:$SDK/cmdline-tools/latest/bin:$SDK/platform-tools"
             flutter config --android-sdk "$SDK" >/dev/null 2>&1 || true
             SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
-            if [ -x "$SDKM" ]; then
+            if [ -x "$SDKM" ] && [ "$MODE" = "zip" ]; then
               CS=$(grep -RhoE 'compileSdk(Version)?[^0-9]*[0-9]+' android 2>/dev/null | grep -oE '[0-9]+$' | sort -nr | head -1 || true)
               BTV=$(grep -RhoE 'buildToolsVersion[^0-9]*[0-9.]+' android 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1 || true)
               NDKV=$(grep -RhoE 'ndkVersion[^0-9]*[0-9.]+' android 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1 || true)
@@ -522,74 +494,63 @@ jobs:
             fi
           fi
 
-          # 3) flutter clean -> pub get (urutan sama dengan VPS)
-          echo "[alur VPS] 1/5 flutter clean"
-          flutter clean
-          echo "[alur VPS] 2/5 flutter pub get"
-          flutter pub get
-
-          # 4) Ikon launcher kalau dikonfigurasi di pubspec.yaml (gagal = peringatan saja)
-          echo "[alur VPS] 3/5 cek flutter_launcher_icons"
-          if [ -f pubspec.yaml ] && grep -q "flutter_launcher_icons:" pubspec.yaml; then
-            flutter pub run flutter_launcher_icons || echo "::warning::Pembuatan ikon launcher gagal, build lanjut"
-          else
-            echo "Tidak ada konfigurasi flutter_launcher_icons, dilewati"
-          fi
-
-          # 5) Validasi resource: buang ikon 0 byte dan JPG duplikat yang PNG-nya ada (sama seperti VPS)
-          echo "[alur VPS] 4/5 validasi resource ikon"
-          if [ -d "android/app/src/main/res" ]; then
-            find android/app/src/main/res/mipmap-* -name "ic_launcher*.png" -size 0 -delete 2>/dev/null || true
-            find android/app/src/main/res/mipmap-* -name "ic_launcher*.jpg" -size 0 -delete 2>/dev/null || true
-            for mipmap in android/app/src/main/res/mipmap-*; do
-              [ -d "$mipmap" ] || continue
-              for icon in "$mipmap"/ic_launcher*.jpg; do
-                [ -f "$icon" ] || continue
-                b=$(basename "$icon" .jpg)
-                if [ -f "$mipmap/$b.png" ]; then echo "Hapus JPG duplikat: $icon (PNG ada)"; rm -f "$icon"; fi
+          # 3) pub get (tanpa flutter clean: runner baru + langkah "Clean stale artifacts" sudah bersih)
+          if [ "$MODE" != "url" ]; then
+            flutter pub get
+            if [ -f pubspec.yaml ] && grep -q "flutter_launcher_icons:" pubspec.yaml; then
+              flutter pub run flutter_launcher_icons || echo "::warning::Pembuatan ikon launcher gagal, build lanjut"
+            fi
+            if [ -d "android/app/src/main/res" ]; then
+              find android/app/src/main/res/mipmap-* \( -name "ic_launcher*.png" -o -name "ic_launcher*.jpg" \) -size 0 -delete 2>/dev/null || true
+              for mipmap in android/app/src/main/res/mipmap-*; do
+                [ -d "$mipmap" ] || continue
+                for icon in "$mipmap"/ic_launcher*.jpg; do
+                  [ -f "$icon" ] || continue
+                  b=$(basename "$icon" .jpg)
+                  [ -f "$mipmap/$b.png" ] && rm -f "$icon"
+                done
               done
-            done
+            fi
           fi
 
-          # 6) local.properties (sdk.dir + flutter.sdk) dan blok konfigurasi worker di gradle.properties
+          # 4) local.properties
           FLUTTER_SDK_PATH=$(dirname "$(dirname "$(command -v flutter)")")
           mkdir -p android
           if [ -n "$SDK" ]; then echo "sdk.dir=$SDK" > android/local.properties; else : > android/local.properties; fi
           echo "flutter.sdk=$FLUTTER_SDK_PATH" >> android/local.properties
-          GRADLE_PROPS="android/gradle.properties"
-          touch "$GRADLE_PROPS"
-          sed -i '/# >>> DEY BUILD WORKER >>>/,/# <<< DEY BUILD WORKER <<</d' "$GRADLE_PROPS" 2>/dev/null || true
-          sed -i '/# >>> RIZQY BUILD WORKER >>>/,/# <<< RIZQY BUILD WORKER <<</d' "$GRADLE_PROPS" 2>/dev/null || true
-          RAM_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 2048)
-          if [ -z "$RAM_MB" ] || [ "$RAM_MB" -lt 1 ]; then RAM_MB=2048; fi
-          if [ "$RAM_MB" -lt 3072 ]; then XMX=1024; WORKERS=1;
-          elif [ "$RAM_MB" -lt 6144 ]; then XMX=2048; WORKERS=2;
-          elif [ "$RAM_MB" -lt 10240 ]; then XMX=3072; WORKERS=2;
-          else XMX=4096; WORKERS=4; fi
-          cat >> "$GRADLE_PROPS" <<EOF
 
-          # >>> RIZQY BUILD WORKER >>>
-          org.gradle.daemon=false
-          org.gradle.parallel=false
-          org.gradle.workers.max=$WORKERS
-          org.gradle.jvmargs=-Xmx${XMX}m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8
-          android.useAndroidX=true
-          android.enableJetifier=true
-          # <<< RIZQY BUILD WORKER <<<
-          EOF
-          echo "[alur VPS] Resource: RAM=$RAM_MB MB Xmx=$XMX MB workers=$WORKERS"
+          # 5) Entry point: lib/main.dart, kalau tidak ada cari file lain yang punya main()
+          TARGET_ARGS=""
+          if [ ! -f lib/main.dart ]; then
+            ALT=$(ls lib/main_*.dart lib/*/main.dart 2>/dev/null | head -n 1 || true)
+            if [ -z "$ALT" ] && [ -d lib ]; then
+              ALT=$(grep -rlE '^[[:space:]]*(void|Future<void>)[[:space:]]+main[[:space:]]*\(' lib --include='*.dart' 2>/dev/null | head -n 1 || true)
+            fi
+            if [ -n "$ALT" ]; then
+              echo "lib/main.dart tidak ada, memakai entry point: $ALT"
+              TARGET_ARGS="-t $ALT"
+            else
+              echo "::error::Target file \"lib/main.dart\" not found. Tidak ada file Dart dengan fungsi main() di $(pwd)."
+              ls -la; ls -la lib 2>/dev/null || echo "(folder lib tidak ada)"
+              exit 1
+            fi
+          fi
 
-          # 7) Build polos seperti VPS (tanpa --target-platform / --no-shrink / --no-pub)
-          echo "[alur VPS] 5/5 flutter build apk --$BT"
-          if [ "$BT" = "debug" ]; then BUILD_CMD="flutter build apk --debug"; else BUILD_CMD="flutter build apk --release"; fi
+          # 6) Tunggu pembersihan disk background (biasanya sudah selesai jauh sebelum sampai sini)
+          for i in $(seq 1 60); do [ -f /tmp/free_disk_done ] && break; sleep 3; done
+          df -h / | tail -n 1
+
+          # 7) Build jalur cepat: 2 ABI saja (arm, arm64), tanpa shrink/tree-shake, --no-pub (pub get sudah dijalankan)
           set +e
+          BUILD_CMD="flutter build apk --$BT $TARGET_ARGS --target-platform=$TARGET_PLATFORMS --no-tree-shake-icons --no-shrink --no-pub"
           $BUILD_CMD 2>&1 | tee build.log
           RC=${PIPESTATUS[0]}
-          # Satu kali percobaan ulang kalau daemon Gradle mati / kehabisan memori (sama seperti VPS)
+          # Satu kali ulang HANYA kalau daemon mati / kehabisan memori, dengan heap dinaikkan (bukan ulang dengan setelan sama)
           if [ "$RC" -ne 0 ] && grep -qiE 'daemon has disappeared|daemon disappeared|Gradle build daemon disappeared|OutOfMemoryError|Java heap space|GC overhead' build.log; then
-            echo "[alur VPS] Daemon/resource Gradle crash, coba ulang sekali dengan state Gradle dingin"
+            echo "Gradle kehabisan memori / daemon mati, ulang sekali dengan heap lebih besar"
             (cd android && ./gradlew --stop >/dev/null 2>&1 || true)
-            rm -rf ~/.gradle/daemon/*/registry.bin.lock ~/.gradle/daemon/*/registry.bin 2>/dev/null || true
+            GP="android/gradle.properties"
+            sed -i -E "s/^org.gradle.jvmargs=-Xmx[0-9]+m/org.gradle.jvmargs=-Xmx$(( ${GRADLE_XMX:-3072} + 1024 ))m/" "$GP" || true
             $BUILD_CMD 2>&1 | tee -a build.log
             RC=${PIPESTATUS[0]}
           fi
