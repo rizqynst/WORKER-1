@@ -150,6 +150,25 @@ jobs:
             exit 1
           fi
 
+          # ZIP di dalam ZIP: kalau belum ada file project (pubspec.yaml / gradlew / settings.gradle),
+          # buka ZIP yang ada di dalamnya. Maksimal 3 putaran, berhenti begitu project ketemu.
+          has_project() {
+            find project_raw -type f \( -name pubspec.yaml -o -name gradlew -o -name settings.gradle -o -name settings.gradle.kts \) \
+              -not -path "*/build/*" -not -path "*/.dart_tool/*" | head -n 1 | grep -q .
+          }
+          for ROUND in 1 2 3; do
+            if has_project; then break; fi
+            NESTED=$(find project_raw -type f -iname '*.zip' | head -n 20)
+            if [ -z "$NESTED" ]; then break; fi
+            echo "Project belum ketemu, buka ZIP di dalam ZIP (putaran $ROUND dari 3) ..."
+            while IFS= read -r Z; do
+              [ -n "$Z" ] || continue
+              D="${Z%.*}"
+              mkdir -p "$D"
+              if unzip -o -q "$Z" -d "$D" || 7z x -y -o"$D" "$Z" >/dev/null 2>&1; then rm -f "$Z"; else rm -rf "$D"; fi
+            done <<< "$NESTED"
+          done
+
           echo "=== Struktur root project_raw ==="
           find project_raw -maxdepth 3 -type d | head -50
           echo ""
