@@ -1,4 +1,4 @@
-name: Build APK (Flutter / Gradle / Web2APK Auto)
+name: Build APK Biasa (Flutter / Web2APK) - KHUSUS APK BIASA
 
 run-name: Build ${{ github.event.inputs.jobId }}
 
@@ -38,7 +38,6 @@ jobs:
         -Dorg.gradle.workers.max=4
         -Dorg.gradle.jvmargs=-Xmx3g
       TARGET_PLATFORMS: android-arm,android-arm64
-      GRADLE_ABIS: armeabi-v7a,arm64-v8a
 
     steps:
       - name: Free disk space
@@ -61,12 +60,21 @@ jobs:
           echo '${{ github.event.inputs.payload }}' > payload.json
           cat payload.json
 
-          # [bot-workflow] rev=2026-11-01.2 (samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; sebelumnya 2026-10-27.2 tambah Free disk space)
+          # [bot-workflow] rev=2026-11-04.3 (KHUSUS APK BIASA: cabang Gradle native/Genetic dihapus total dari workflow ini, Genetic hanya di build-android.yml; alur dispatch/payload/unduh ZIP/artifact apk-jobId mengikuti AMBIL_ALURGH; sebelumnya 2026-11-04.2 jalur dipisah via payload.projectType; 2026-11-04.1 alur Flutter mode ZIP disamakan dengan worker VPS; 2026-11-01.2 samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; 2026-10-27.2 tambah Free disk space)
           # Tipe build: payload.buildType dulu (dikirim bot), cadangan input build_type, default release
           BUILD_TYPE=$(jq -r '.buildType // empty' payload.json)
           [ -z "$BUILD_TYPE" ] && BUILD_TYPE="${{ github.event.inputs.build_type }}"
           [ -z "$BUILD_TYPE" ] && BUILD_TYPE=release
           echo "BUILD_TYPE=$BUILD_TYPE" >> "$GITHUB_ENV"
+
+          # Workflow ini KHUSUS APK BIASA (Flutter). Jalur GENETIC (Android native) punya workflow sendiri
+          # (build-android.yml) dan tidak pernah lewat sini.
+          REQ_TYPE=$(jq -r '.projectType // empty' payload.json)
+          if [ "$REQ_TYPE" = "android" ]; then
+            echo "::error::Workflow ini KHUSUS APK BIASA (Flutter). Mode yang dipilih KHUSUS GENETIC (Android Java/Kotlin) harus memakai workflow build-android.yml."
+            exit 1
+          fi
+          echo "Mode: KHUSUS APK BIASA (Flutter)"
 
           MODE=$(jq -r '.mode // empty' payload.json)
           if [ -z "$MODE" ]; then
@@ -150,33 +158,27 @@ jobs:
             exit 1
           fi
 
-          # ZIP di dalam ZIP: kalau belum ada file project (pubspec.yaml / gradlew / settings.gradle),
-          # buka ZIP yang ada di dalamnya. Maksimal 3 putaran, berhenti begitu project ketemu.
-          has_project() {
-            find project_raw -type f \( -name pubspec.yaml -o -name gradlew -o -name settings.gradle -o -name settings.gradle.kts \) \
-              -not -path "*/build/*" -not -path "*/.dart_tool/*" | head -n 1 | grep -q .
-          }
+          # ZIP di dalam ZIP: sama seperti worker VPS, SEMUA zip di dalam dibuka dulu (maksimal 3 putaran)
+          # sebelum project dideteksi, supaya project Flutter yang ada di ZIP dalam terbaca.
           for ROUND in 1 2 3; do
-            if has_project; then break; fi
-            NESTED=$(find project_raw -type f -iname '*.zip' | head -n 20)
+            NESTED=$(find project_raw -type f -iname '*.zip')
             if [ -z "$NESTED" ]; then break; fi
-            echo "Project belum ketemu, buka ZIP di dalam ZIP (putaran $ROUND dari 3) ..."
+            FOUND=0
+            echo "Buka ZIP di dalam ZIP (putaran $ROUND dari 3) ..."
             while IFS= read -r Z; do
               [ -n "$Z" ] || continue
               D="${Z%.*}"
               mkdir -p "$D"
-              if unzip -o -q "$Z" -d "$D" || 7z x -y -o"$D" "$Z" >/dev/null 2>&1; then rm -f "$Z"; else rm -rf "$D"; fi
+              if unzip -o -q "$Z" -d "$D" || 7z x -y -o"$D" "$Z" >/dev/null 2>&1; then rm -f "$Z"; FOUND=1; else rm -rf "$D"; fi
             done <<< "$NESTED"
+            [ "$FOUND" -eq 1 ] || break
           done
 
           echo "=== Struktur root project_raw ==="
           find project_raw -maxdepth 3 -type d | head -50
           echo ""
           echo "=== File kunci ==="
-          find project_raw -maxdepth 6 -type f \
-            \( -name "gradlew" -o -name "pubspec.yaml" \
-               -o -name "settings.gradle" -o -name "settings.gradle.kts" \
-               -o -name "build.gradle" -o -name "build.gradle.kts" \) \
+          find project_raw -maxdepth 6 -type f -name "pubspec.yaml" \
             -not -path "*/build/*" | head -30
 
       - name: Setup Java 17
@@ -186,6 +188,7 @@ jobs:
           java-version: '17'
 
       - name: Setup Flutter
+        if: env.MODE == 'url'
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.38.0'
@@ -264,37 +267,98 @@ jobs:
             done < <(find project_raw -type f -name pubspec.yaml \
                       -not -path "*/build/*" -not -path "*/.dart_tool/*" \
                       -not -path "*/.symlinks/*" -not -path "*/ephemeral/*")
-            GRADLEW=$(find project_raw -type f -name gradlew \
-                      -not -path "*/build/*" | head -n 1)
-            SETTINGS=$(find project_raw -type f \
-                      \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
-                      -not -path "*/build/*" | head -n 1)
 
             echo "pubspec : ${PUBSPEC:-<none>}"
-            echo "gradlew : ${GRADLEW:-<none>}"
-            echo "settings: ${SETTINGS:-<none>}"
 
-            if [ -n "$PUBSPEC" ]; then
-              DIR=$(dirname "$PUBSPEC")
-              echo "type=flutter" >> "$GITHUB_OUTPUT"
-              echo "dir=$DIR"     >> "$GITHUB_OUTPUT"
-              echo "✅ Flutter project → $DIR"
-            elif [ -n "$GRADLEW" ]; then
-              DIR=$(dirname "$GRADLEW")
-              echo "type=gradle"  >> "$GITHUB_OUTPUT"
-              echo "dir=$DIR"     >> "$GITHUB_OUTPUT"
-              echo "✅ Native Gradle project → $DIR"
-            elif [ -n "$SETTINGS" ]; then
-              DIR=$(dirname "$SETTINGS")
-              echo "type=gradle"  >> "$GITHUB_OUTPUT"
-              echo "dir=$DIR"     >> "$GITHUB_OUTPUT"
-              echo "✅ Gradle project (no wrapper) → $DIR"
-            else
-              echo "::error::Project tidak dikenali (bukan Flutter / bukan Gradle)."
-              find project_raw -maxdepth 3
+            if [ -z "$PUBSPEC" ]; then
+              echo "::error::Mode KHUSUS APK BIASA (Flutter), tetapi ZIP tidak punya pubspec.yaml. Kalau ini project Android Java/Kotlin, pilih KHUSUS GENETIC lalu build ulang."
+              echo "=== Isi ZIP (kedalaman 3) ==="
+              find project_raw -maxdepth 3 | head -50
               exit 1
             fi
+
+            DIR=$(dirname "$PUBSPEC")
+            echo "type=flutter" >> "$GITHUB_OUTPUT"
+            echo "dir=$DIR"     >> "$GITHUB_OUTPUT"
+            echo "✅ Flutter project → $DIR"
           fi
+
+      - name: Pilih versi Flutter sesuai project (alur VPS)
+        id: fv
+        if: env.MODE != 'url'
+        env:
+          PROJ_DIR: ${{ steps.detect.outputs.dir }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const https = require('https');
+          const FALLBACK = '3.38.0';
+          const out = (v) => fs.appendFileSync(process.env.GITHUB_OUTPUT, 'version=' + v + '\n');
+          const dir = process.env.PROJ_DIR || '.';
+          let text = '';
+          try { text = fs.readFileSync(dir + '/pubspec.yaml', 'utf8'); } catch (_) { out(FALLBACK); process.exit(0); }
+
+          // Sama seperti VPS (projectPrep.js selectCompatibleFlutter): baca blok environment pubspec.yaml
+          function yamlConstraint(key) {
+            const m = text.match(/(?:^|\n)environment\s*:\s*\n([\s\S]*?)(?=\n[^ \t]|$)/i);
+            if (!m) return '';
+            for (const line of m[1].split(/\r?\n/)) {
+              const x = line.match(/^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$/);
+              if (x && x[1].toLowerCase() === key.toLowerCase()) return x[2].replace(/^['"]|['"]$/g, '').trim();
+            }
+            return '';
+          }
+          const dartRange = yamlConstraint('sdk');
+          const flutterRange = yamlConstraint('flutter');
+          function ver(s) { const m = String(s || '').match(/(?:v)?(\d+)\.(\d+)(?:\.(\d+))?/); return m ? [Number(m[1]), Number(m[2]), Number(m[3] || 0)] : null; }
+          function cmp(a, b) { for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] - b[i]; } return 0; }
+          function bumpCaret(lo) { if (lo[0] > 0) return [lo[0] + 1, 0, 0]; if (lo[1] > 0) return [0, lo[1] + 1, 0]; return [0, 0, lo[2] + 1]; }
+          function satisfies(version, expr) {
+            if (!expr || expr === 'any') return true;
+            const x = ver(version); if (!x) return false;
+            return String(expr).split(/\s*\|\|\s*/).some((part) => part.trim().split(/\s+/).filter(Boolean).every((tok) => {
+              if (tok === 'any') return true;
+              if (tok.startsWith('^')) { const lo = ver(tok.slice(1)); if (!lo) return false; return cmp(x, lo) >= 0 && cmp(x, bumpCaret(lo)) < 0; }
+              if (tok.startsWith('~')) { const lo = ver(tok.slice(1)); if (!lo) return false; return cmp(x, lo) >= 0 && cmp(x, [lo[0], lo[1] + 1, 0]) < 0; }
+              const op = (tok.match(/^(>=|<=|>|<|=)/) || [])[1] || '=';
+              const m = tok.replace(/^(>=|<=|>|<|=)/, '').match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+              if (!m) return true;
+              const c = cmp(x, [Number(m[1]), Number(m[2] || 0), Number(m[3] || 0)]);
+              if (op === '>=') return c >= 0; if (op === '>') return c > 0; if (op === '<=') return c <= 0; if (op === '<') return c < 0;
+              return c === 0;
+            }));
+          }
+          function get(url) {
+            return new Promise((resolve, reject) => https.get(url, (res) => {
+              let d = ''; res.on('data', (c) => d += c);
+              res.on('end', () => res.statusCode >= 200 && res.statusCode < 300 ? resolve(d) : reject(new Error('HTTP ' + res.statusCode)));
+            }).on('error', reject));
+          }
+          (async () => {
+            console.log('pubspec environment: sdk="' + dartRange + '" flutter="' + flutterRange + '"');
+            const raw = process.env.FLUTTER_RELEASES_FILE
+              ? fs.readFileSync(process.env.FLUTTER_RELEASES_FILE, 'utf8')
+              : await get('https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json');
+            const stable = (JSON.parse(raw).releases || []).filter((r) => r.channel === 'stable' && r.archive && r.version);
+            stable.sort((a, b) => String(b.release_date || '').localeCompare(String(a.release_date || '')));
+            const fits = (r) => (!dartRange || !r.dart_sdk_version || satisfies(r.dart_sdk_version, dartRange)) && (!flutterRange || satisfies(r.version, flutterRange));
+            // Urutan sama dengan VPS: versi default dipakai kalau cocok, kalau tidak yang stable terbaru yang cocok.
+            const def = stable.find((r) => r.version === FALLBACK);
+            if (def && fits(def)) { console.log('Flutter default ' + FALLBACK + ' cocok'); out(FALLBACK); return; }
+            const pick = stable.find(fits);
+            if (pick) { console.log('Flutter dipilih: ' + pick.version + ' (dart ' + pick.dart_sdk_version + ')'); out(pick.version); return; }
+            console.log('::warning::Tidak ada Flutter stable yang cocok dengan pubspec, pakai ' + FALLBACK);
+            out(FALLBACK);
+          })().catch((e) => { console.log('::warning::Gagal memilih versi Flutter (' + e.message + '), pakai ' + FALLBACK); out(FALLBACK); });
+          NODE
+
+      - name: Setup Flutter (versi sesuai project)
+        if: env.MODE != 'url'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.fv.outputs.version }}
+          channel: stable
+          cache: false
 
       - name: Sanitize Android PNG resources
         run: |
@@ -321,26 +385,6 @@ jobs:
           echo "✅ Sanitasi PNG resource: $FIXED diperbaiki, $BAD tidak terbaca"
           exit 0
 
-      - name: Validate Flutter Android-only ZIP
-        if: steps.detect.outputs.type == 'gradle'
-        run: |
-          set +e
-          DIR="${{ steps.detect.outputs.dir }}"
-          SET=$(ls "$DIR"/settings.gradle.kts "$DIR"/settings.gradle 2>/dev/null | head -n 1)
-          if [ -n "$SET" ] && grep -qE 'flutter-plugin-loader|flutter\.sdk|flutter_tools' "$SET"; then
-            echo "Terdeteksi: ini folder android dari project Flutter, tetapi tidak ada pubspec.yaml di ZIP."
-            # local.properties bawaan laptop (mis. /opt/homebrew/..., C:\\...) tidak berlaku di runner
-            rm -f "$DIR/local.properties"
-            echo "::error::ZIP hanya berisi folder android dari project Flutter (tidak ada pubspec.yaml dan lib/). APK tidak bisa dibuat tanpa kode Dart-nya. Kirim ZIP project Flutter yang lengkap (folder yang berisi pubspec.yaml, lib/, android/)."
-            exit 1
-          fi
-          # Project native biasa: buang local.properties dari laptop pembuat ZIP, tulis ulang untuk runner
-          if [ -f "$DIR/local.properties" ]; then
-            rm -f "$DIR/local.properties"
-          fi
-          echo "sdk.dir=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" > "$DIR/local.properties"
-          echo "✅ local.properties disesuaikan untuk runner"
-
       - name: Clean stale artifacts from ZIP (build dari nol)
         run: |
           set +e
@@ -357,13 +401,10 @@ jobs:
           exit 0
 
       - name: Tune gradle.properties
+        if: env.MODE != 'zip'
         run: |
           set -euo pipefail
-          if [ "${{ steps.detect.outputs.type }}" = "flutter" ]; then
-            GP="${{ steps.detect.outputs.dir }}/android/gradle.properties"
-          else
-            GP="${{ steps.detect.outputs.dir }}/gradle.properties"
-          fi
+          GP="${{ steps.detect.outputs.dir }}/android/gradle.properties"
           mkdir -p "$(dirname "$GP")"
           touch "$GP"
           sed -i '/kotlin.jvm.target.validation.mode/d' "$GP" || true
@@ -407,7 +448,7 @@ jobs:
           echo "ℹ️ Baris 'ndkVersion = flutter.ndkVersion' gak ketemu -- dilewati."
 
       - name: Build Flutter APK
-        if: steps.detect.outputs.type == 'flutter'
+        if: env.MODE != 'zip'
         working-directory: ${{ steps.detect.outputs.dir }}
         run: |
           set -euo pipefail
@@ -439,37 +480,120 @@ jobs:
             --no-shrink \
             --no-pub 2>&1 | tee build.log
 
-      - name: Build Native APK
-        if: steps.detect.outputs.type == 'gradle'
+      - name: Build Flutter APK (alur VPS)
+        if: env.MODE == 'zip'
         working-directory: ${{ steps.detect.outputs.dir }}
         run: |
           set -euo pipefail
+          export BOT=true
+          # Samakan dengan worker VPS (worker/pipeline/flutter.js): jangan pakai GRADLE_OPTS milik job, konfigurasi Gradle
+          # diatur lewat blok worker di android/gradle.properties seperti di VPS.
+          unset GRADLE_OPTS
           BT="$BUILD_TYPE"
-          if [ "$BT" = "debug" ]; then TASK="assembleDebug"; else TASK="assembleRelease"; fi
 
-          if [ -f gradlew ]; then
-            chmod +x gradlew
-            CMD="./gradlew"
-            echo "✅ Pakai gradle wrapper"
-          else
-            echo "⚠️ gradlew tidak ada, generate wrapper dulu"
-            gradle wrapper --gradle-version 8.7 || true
-            if [ -f gradlew ]; then
-              chmod +x gradlew
-              CMD="./gradlew"
-            else
-              CMD="gradle"
+          # 1) Pilih Java: 17, kecuali Gradle project < 7.6 memakai Java 11 (sama seperti VPS)
+          WRAPPER_PROPS="android/gradle/wrapper/gradle-wrapper.properties"
+          [ -f "$WRAPPER_PROPS" ] || WRAPPER_PROPS="gradle/wrapper/gradle-wrapper.properties"
+          JAVA_PICK="${JAVA_HOME_17_X64:-$JAVA_HOME}"
+          if [ -f "$WRAPPER_PROPS" ]; then
+            GV=$(grep 'distributionUrl' "$WRAPPER_PROPS" | grep -oE 'gradle-[0-9]+\.[0-9]+' | head -1 | sed 's/gradle-//' || true)
+            GM=$(echo "$GV" | cut -d. -f1); GN=$(echo "$GV" | cut -d. -f2)
+            if [ -n "${JAVA_HOME_11_X64:-}" ] && [ -n "$GM" ] && { [ "$GM" -lt 7 ] || { [ "$GM" -eq 7 ] && [ "${GN:-0}" -lt 6 ]; }; }; then JAVA_PICK="$JAVA_HOME_11_X64"; fi
+          fi
+          export JAVA_HOME="$JAVA_PICK"; export PATH="$JAVA_HOME/bin:$PATH"
+          flutter config --no-analytics >/dev/null 2>&1 || true
+          flutter config --jdk-dir "$JAVA_HOME" >/dev/null 2>&1 || true
+          echo "[alur VPS] Java: $JAVA_HOME (gradle wrapper: ${GV:-?})"
+
+          # 2) Android SDK + pasang compileSdk/build-tools/NDK yang diminta project (additif, tidak mengubah file Gradle)
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [ -n "$SDK" ]; then
+            export ANDROID_HOME="$SDK" ANDROID_SDK_ROOT="$SDK"
+            export PATH="$PATH:$SDK/cmdline-tools/latest/bin:$SDK/platform-tools"
+            flutter config --android-sdk "$SDK" >/dev/null 2>&1 || true
+            SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+            if [ -x "$SDKM" ]; then
+              CS=$(grep -RhoE 'compileSdk(Version)?[^0-9]*[0-9]+' android 2>/dev/null | grep -oE '[0-9]+$' | sort -nr | head -1 || true)
+              BTV=$(grep -RhoE 'buildToolsVersion[^0-9]*[0-9.]+' android 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1 || true)
+              NDKV=$(grep -RhoE 'ndkVersion[^0-9]*[0-9.]+' android 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1 || true)
+              [ -n "$CS" ]   && { [ -d "$SDK/platforms/android-$CS" ] || yes | "$SDKM" "platforms;android-$CS" >/dev/null 2>&1 || true; }
+              [ -n "$BTV" ]  && { [ -d "$SDK/build-tools/$BTV" ]      || yes | "$SDKM" "build-tools;$BTV" >/dev/null 2>&1 || true; }
+              [ -n "$NDKV" ] && { [ -d "$SDK/ndk/$NDKV" ]             || yes | "$SDKM" "ndk;$NDKV" >/dev/null 2>&1 || true; }
             fi
           fi
 
-          echo "Running: $CMD $TASK"
-          $CMD "$TASK" \
-            --parallel --no-build-cache \
-            -Pandroid.injected.build.abi=$GRADLE_ABIS 2>&1 | tee build.log || {
-              echo "::error::Build gagal. Cek log di atas."
-              tail -100 build.log
-              exit 1
-            }
+          # 3) flutter clean -> pub get (urutan sama dengan VPS)
+          echo "[alur VPS] 1/5 flutter clean"
+          flutter clean
+          echo "[alur VPS] 2/5 flutter pub get"
+          flutter pub get
+
+          # 4) Ikon launcher kalau dikonfigurasi di pubspec.yaml (gagal = peringatan saja)
+          echo "[alur VPS] 3/5 cek flutter_launcher_icons"
+          if [ -f pubspec.yaml ] && grep -q "flutter_launcher_icons:" pubspec.yaml; then
+            flutter pub run flutter_launcher_icons || echo "::warning::Pembuatan ikon launcher gagal, build lanjut"
+          else
+            echo "Tidak ada konfigurasi flutter_launcher_icons, dilewati"
+          fi
+
+          # 5) Validasi resource: buang ikon 0 byte dan JPG duplikat yang PNG-nya ada (sama seperti VPS)
+          echo "[alur VPS] 4/5 validasi resource ikon"
+          if [ -d "android/app/src/main/res" ]; then
+            find android/app/src/main/res/mipmap-* -name "ic_launcher*.png" -size 0 -delete 2>/dev/null || true
+            find android/app/src/main/res/mipmap-* -name "ic_launcher*.jpg" -size 0 -delete 2>/dev/null || true
+            for mipmap in android/app/src/main/res/mipmap-*; do
+              [ -d "$mipmap" ] || continue
+              for icon in "$mipmap"/ic_launcher*.jpg; do
+                [ -f "$icon" ] || continue
+                b=$(basename "$icon" .jpg)
+                if [ -f "$mipmap/$b.png" ]; then echo "Hapus JPG duplikat: $icon (PNG ada)"; rm -f "$icon"; fi
+              done
+            done
+          fi
+
+          # 6) local.properties (sdk.dir + flutter.sdk) dan blok konfigurasi worker di gradle.properties
+          FLUTTER_SDK_PATH=$(dirname "$(dirname "$(command -v flutter)")")
+          mkdir -p android
+          if [ -n "$SDK" ]; then echo "sdk.dir=$SDK" > android/local.properties; else : > android/local.properties; fi
+          echo "flutter.sdk=$FLUTTER_SDK_PATH" >> android/local.properties
+          GRADLE_PROPS="android/gradle.properties"
+          touch "$GRADLE_PROPS"
+          sed -i '/# >>> DEY BUILD WORKER >>>/,/# <<< DEY BUILD WORKER <<</d' "$GRADLE_PROPS" 2>/dev/null || true
+          sed -i '/# >>> RIZQY BUILD WORKER >>>/,/# <<< RIZQY BUILD WORKER <<</d' "$GRADLE_PROPS" 2>/dev/null || true
+          RAM_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 2048)
+          if [ -z "$RAM_MB" ] || [ "$RAM_MB" -lt 1 ]; then RAM_MB=2048; fi
+          if [ "$RAM_MB" -lt 3072 ]; then XMX=1024; WORKERS=1;
+          elif [ "$RAM_MB" -lt 6144 ]; then XMX=2048; WORKERS=2;
+          elif [ "$RAM_MB" -lt 10240 ]; then XMX=3072; WORKERS=2;
+          else XMX=4096; WORKERS=4; fi
+          cat >> "$GRADLE_PROPS" <<EOF
+
+          # >>> RIZQY BUILD WORKER >>>
+          org.gradle.daemon=false
+          org.gradle.parallel=false
+          org.gradle.workers.max=$WORKERS
+          org.gradle.jvmargs=-Xmx${XMX}m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.enableJetifier=true
+          # <<< RIZQY BUILD WORKER <<<
+          EOF
+          echo "[alur VPS] Resource: RAM=$RAM_MB MB Xmx=$XMX MB workers=$WORKERS"
+
+          # 7) Build polos seperti VPS (tanpa --target-platform / --no-shrink / --no-pub)
+          echo "[alur VPS] 5/5 flutter build apk --$BT"
+          if [ "$BT" = "debug" ]; then BUILD_CMD="flutter build apk --debug"; else BUILD_CMD="flutter build apk --release"; fi
+          set +e
+          $BUILD_CMD 2>&1 | tee build.log
+          RC=${PIPESTATUS[0]}
+          # Satu kali percobaan ulang kalau daemon Gradle mati / kehabisan memori (sama seperti VPS)
+          if [ "$RC" -ne 0 ] && grep -qiE 'daemon has disappeared|daemon disappeared|Gradle build daemon disappeared|OutOfMemoryError|Java heap space|GC overhead' build.log; then
+            echo "[alur VPS] Daemon/resource Gradle crash, coba ulang sekali dengan state Gradle dingin"
+            (cd android && ./gradlew --stop >/dev/null 2>&1 || true)
+            rm -rf ~/.gradle/daemon/*/registry.bin.lock ~/.gradle/daemon/*/registry.bin 2>/dev/null || true
+            $BUILD_CMD 2>&1 | tee -a build.log
+            RC=${PIPESTATUS[0]}
+          fi
+          exit $RC
 
       - name: Debug - scan all APK
         if: failure()
