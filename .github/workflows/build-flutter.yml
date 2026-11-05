@@ -306,6 +306,18 @@ jobs:
             }
             return '';
           }
+          // Versi Flutter yang dikunci di dalam ZIP (urutan prioritas). Hanya versi persis x.y.z yang dipakai.
+          function readPinned() {
+            const rd = (f) => { try { return fs.readFileSync(dir + '/' + f, 'utf8'); } catch (_) { return ''; } };
+            const exact = (v) => { const m = String(v || '').trim().match(/^v?(\d+\.\d+\.\d+)(?:[-+].*)?$/); return m ? m[1] : ''; };
+            let v = '';
+            try { v = exact((JSON.parse(rd('.fvmrc')) || {}).flutter); if (v) return { v, src: '.fvmrc' }; } catch (_) {}
+            try { const j = JSON.parse(rd('.fvm/fvm_config.json')) || {}; v = exact(j.flutterSdkVersion || j.flutter); if (v) return { v, src: '.fvm/fvm_config.json' }; } catch (_) {}
+            const tv = rd('.tool-versions').match(/^\s*flutter\s+(\S+)/im); if (tv) { v = exact(tv[1]); if (v) return { v, src: '.tool-versions' }; }
+            v = exact(yamlConstraint('flutter')); if (v) return { v, src: 'pubspec environment.flutter' };
+            return null;
+          }
+          const pinned = readPinned();
           const dartRange = yamlConstraint('sdk');
           const flutterRange = yamlConstraint('flutter');
           function ver(s) { const m = String(s || '').match(/(?:v)?(\d+)\.(\d+)(?:\.(\d+))?/); return m ? [Number(m[1]), Number(m[2]), Number(m[3] || 0)] : null; }
@@ -334,6 +346,18 @@ jobs:
           }
           (async () => {
             console.log('pubspec environment: sdk="' + dartRange + '" flutter="' + flutterRange + '"');
+            // 1) Versi dikunci di ZIP dan ada di katalog stable -> pakai persis itu.
+            if (pinned) {
+              console.log('Versi di ZIP: ' + pinned.v + ' (dari ' + pinned.src + ')');
+              if (pinned.v === FALLBACK) { out(FALLBACK); return; }
+              try {
+                const raw0 = process.env.FLUTTER_RELEASES_FILE ? fs.readFileSync(process.env.FLUTTER_RELEASES_FILE, 'utf8') : await get('https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json');
+                const hit = (JSON.parse(raw0).releases || []).find((r) => r.channel === 'stable' && r.archive && r.version === pinned.v);
+                if (hit) { console.log('Flutter ' + hit.version + ' dipakai sesuai ZIP (dart ' + hit.dart_sdk_version + ')'); out(hit.version); return; }
+                console.log('::warning::Versi ' + pinned.v + ' dari ZIP tidak ada di rilis stable, pakai pemilihan biasa');
+              } catch (e) { console.log('::warning::Gagal cek katalog untuk versi ZIP (' + e.message + '), pakai pemilihan biasa'); }
+            }
+            // 2) Tidak ada versi di ZIP / tidak ditemukan -> alur biasa di bawah.
             // Jalur cepat: versi default cocok -> selesai, tanpa fetch katalog dan tanpa menimbang versi lain.
             if (satisfies(FALLBACK_DART, dartRange) && satisfies(FALLBACK, flutterRange)) { console.log('Flutter default ' + FALLBACK + ' cocok (jalur cepat)'); out(FALLBACK); return; }
             const raw = process.env.FLUTTER_RELEASES_FILE
@@ -553,6 +577,37 @@ jobs:
             sed -i -E "s/^org.gradle.jvmargs=-Xmx[0-9]+m/org.gradle.jvmargs=-Xmx$(( ${GRADLE_XMX:-3072} + 1024 ))m/" "$GP" || true
             $BUILD_CMD 2>&1 | tee -a build.log
             RC=${PIPESTATUS[0]}
+          fi
+          # compileSdk terlalu rendah ("... compile against version 36 or later of the Android APIs"):
+          # naikkan compileSdk ke angka yang diminta, pasang platform-nya, lalu build ulang SEKALI.
+          if [ "$RC" -ne 0 ] && grep -qE "compile against version [0-9]+ or later" build.log; then
+            NEED=$(grep -oE "compile against version [0-9]+ or later" build.log | grep -oE '[0-9]+' | sort -nr | head -1)
+            GF=""
+            for f in android/app/build.gradle.kts android/app/build.gradle; do [ -f "$f" ] && { GF="$f"; break; }; done
+            if [ -n "$NEED" ] && [ -n "$GF" ]; then
+              echo "compileSdk dinaikkan ke $NEED di $GF"
+              sed -i -E "s/compileSdk(Version)?([[:space:]]*=[[:space:]]*|[[:space:]]+)[^[:space:]]+/compileSdk\1\2$NEED/" "$GF"
+              grep -nE "compileSdk" "$GF" | head -n 3 || true
+              SDKM="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/cmdline-tools/latest/bin/sdkmanager"
+              [ -x "$SDKM" ] && { [ -d "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/platforms/android-$NEED" ] || yes | "$SDKM" "platforms;android-$NEED" >/dev/null 2>&1 || true; }
+              $BUILD_CMD 2>&1 | tee -a build.log
+              RC=${PIPESTATUS[0]}
+            fi
+          fi
+          # Package dipakai di kode tapi belum ditulis di pubspec.yaml ("Couldn't resolve the package 'x'"):
+          # tambahkan otomatis (versi terbaru yang cocok), lalu build ulang SEKALI. Tidak menyentuh isi lib/.
+          if [ "$RC" -ne 0 ] && [ "$MODE" != "url" ] && grep -qE "Couldn't resolve the package '[^']+'" build.log; then
+            OWN=$(grep -m1 -E '^name:' pubspec.yaml | sed -E 's/^name:[[:space:]]*//; s/["'"'"'[:space:]]//g' || true)
+            MISSING=$(grep -oE "Couldn't resolve the package '[^']+'" build.log | sed -E "s/.*'([^']+)'/\1/" | sort -u | grep -vx "${OWN:-__none__}" || true)
+            if [ -n "$MISSING" ]; then
+              echo "Package belum ada di pubspec.yaml, ditambahkan otomatis: $(echo $MISSING | tr '\n' ' ')"
+              for PKG in $MISSING; do
+                flutter pub add "$PKG" 2>&1 | tail -n 3 || echo "::warning::Gagal menambah $PKG"
+              done
+              flutter pub get 2>&1 | tail -n 3 || true
+              $BUILD_CMD 2>&1 | tee -a build.log
+              RC=${PIPESTATUS[0]}
+            fi
           fi
           exit $RC
 
