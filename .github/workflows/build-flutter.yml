@@ -57,7 +57,7 @@ jobs:
           echo '${{ github.event.inputs.payload }}' > payload.json
           cat payload.json
 
-          # [bot-workflow] rev=2026-11-07.3 (pub get: langkah C dependency_overrides 3 kandidat (git/host/any) dipilih lewat tes compile cepat, untuk konflik package git seperti better_player; sebelumnya 2026-11-07.2: dependency_overrides any; sebelumnya 2026-11-07.1: jenis jalur wajib eksplisit, tidak ada tebakan; sebelumnya 2026-11-04.4: build cepat: Flutter 1 keputusan tanpa uji satu-satu, build ZIP pakai jalur cepat 2 ABI + Gradle paralel; sebelumnya 2026-11-04.3: KHUSUS APK BIASA: cabang Gradle native/Genetic dihapus total dari workflow ini, Genetic hanya di build-android.yml; alur dispatch/payload/unduh ZIP/artifact apk-jobId mengikuti AMBIL_ALURGH; sebelumnya 2026-11-04.2 jalur dipisah via payload.projectType; 2026-11-04.1 alur Flutter mode ZIP disamakan dengan worker VPS; 2026-11-01.2 samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; 2026-10-27.2 tambah Free disk space)
+          # [bot-workflow] rev=2026-11-07.4 (pub get: kandidat terakhir mengganti package git yang konflik ke versi pub.dev; sebelumnya 2026-11-07.3: pub get: langkah C dependency_overrides 3 kandidat (git/host/any) dipilih lewat tes compile cepat, untuk konflik package git seperti better_player; sebelumnya 2026-11-07.2: dependency_overrides any; sebelumnya 2026-11-07.1: jenis jalur wajib eksplisit, tidak ada tebakan; sebelumnya 2026-11-04.4: build cepat: Flutter 1 keputusan tanpa uji satu-satu, build ZIP pakai jalur cepat 2 ABI + Gradle paralel; sebelumnya 2026-11-04.3: KHUSUS APK BIASA: cabang Gradle native/Genetic dihapus total dari workflow ini, Genetic hanya di build-android.yml; alur dispatch/payload/unduh ZIP/artifact apk-jobId mengikuti AMBIL_ALURGH; sebelumnya 2026-11-04.2 jalur dipisah via payload.projectType; 2026-11-04.1 alur Flutter mode ZIP disamakan dengan worker VPS; 2026-11-01.2 samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; 2026-10-27.2 tambah Free disk space)
           # Tipe build: payload.buildType dulu (dikirim bot), cadangan input build_type, default release
           BUILD_TYPE=$(jq -r '.buildType // empty' payload.json)
           [ -z "$BUILD_TYPE" ] && BUILD_TYPE="${{ github.event.inputs.build_type }}"
@@ -852,13 +852,15 @@ jobs:
             #   git  = batas versi yang diminta package git/path (kode package git tidak bisa diubah, jadi dijaga dulu)
             #   host = batas versi yang diminta package hosted lain
             #   any  = tanpa batas (versi terbaru)
+            #   hosted = pilihan terakhir: package yang ber-sumber git dan ikut konflik diganti ke versi pub.dev (any),
+            #            lalu dicek compile juga. Berguna kalau batas versi package git itu sendiri yang mustahil dipenuhi.
             # Tiap kandidat yang lolos pub get dites compile cepat (flutter build bundle = kompilasi Dart ke kernel,
             # tanpa Gradle). Kandidat pertama yang compile dipakai. Kalau tidak ada yang compile, kandidat pertama yang
             # lolos pub get tetap dipakai supaya build asli menampilkan error sebenarnya. Package git/path/sdk tidak
             # pernah di-override (sumbernya tidak boleh berganti jadi hosted).
             cp pub_get.log pub_conflict.log
             CAND=""; TRIED=""
-            for MODE in git host any; do
+            for MODE in git host any hosted; do
               cp pubspec.yaml.orig pubspec.yaml
               cp pub_conflict.log pub_get.log
               PUB_OK=0
@@ -900,10 +902,36 @@ jobs:
             const map = (m[2] || nonHosted(subj)) ? gitC : hostC;
             if (!map[tgt]) map[tgt] = c;
           }
+          const gitOnly = (n) => {
+            for (let i = 0; i < lines.length; i++) {
+              const mm = lines[i].match(new RegExp('^  ' + n + ':\\s*(.*)$'));
+              if (!mm) continue;
+              if (/\bgit\b/.test(mm[1])) return true;
+              for (let j = i + 1; j < lines.length; j++) {
+                if (/^\s*(#.*)?$/.test(lines[j])) continue;
+                if (/^ {4,}/.test(lines[j])) { if (/^\s+git:/.test(lines[j])) return true; } else break;
+              }
+              return false;
+            }
+            return false;
+          };
           const add = [...found].filter((n) => !skip.has(n) && !existing.has(n) && !nonHosted(n));
-          if (!add.length) process.exit(0);
+          const swap = mode === 'hosted' ? [...found].filter((n) => !skip.has(n) && gitOnly(n)) : [];
+          if (!add.length && !swap.length) process.exit(0);
+          if (swap.length) {
+            const ls = y.split('\n');
+            for (const n of swap) {
+              const i = ls.findIndex((l) => new RegExp('^  ' + n + ':').test(l));
+              if (i < 0) continue;
+              let j = i + 1;
+              while (j < ls.length && (/^ {4,}\S/.test(ls[j]) || /^\s*(#.*)?$/.test(ls[j]) && j + 1 < ls.length && /^ {4,}\S/.test(ls[j + 1]))) j++;
+              ls.splice(i, j - i, '  ' + n + ': any');
+            }
+            y = ls.join('\n');
+          }
           const val = (n) => mode === 'git' ? (gitC[n] || 'any') : mode === 'host' ? (hostC[n] || 'any') : 'any';
           const q = (v) => (v === 'any' || /^\^?\d[^\s]*$/.test(v)) ? v : "'" + v + "'";
+          if (!add.length) { fs.writeFileSync('pubspec.yaml', y); console.log(swap.map((n) => 'ganti-git->pub.dev:' + n).join(' ')); process.exit(0); }
           const block = add.map((n) => '  ' + n + ': ' + q(val(n))).join('\n');
           if (/^dependency_overrides:[ \t]*$/m.test(y)) {
             y = y.replace(/^dependency_overrides:[ \t]*$/m, (h) => h + '\n' + block);
@@ -911,7 +939,7 @@ jobs:
             y = y.replace(/\s*$/, '\n') + '\ndependency_overrides:\n' + block + '\n';
           }
           fs.writeFileSync('pubspec.yaml', y);
-          console.log(add.map((n) => n + '=' + val(n)).join(' '));
+          console.log(add.map((n) => n + '=' + val(n)).concat(swap.map((n) => 'ganti-git->pub.dev:' + n)).join(' '));
           NODE_OVR
                 )
                 [ -z "$ADDED" ] && break
