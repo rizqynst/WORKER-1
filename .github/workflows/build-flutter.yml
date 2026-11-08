@@ -57,7 +57,7 @@ jobs:
           echo '${{ github.event.inputs.payload }}' > payload.json
           cat payload.json
 
-          # [bot-workflow] rev=2026-11-04.4 (build cepat: Flutter 1 keputusan tanpa uji satu-satu, build ZIP pakai jalur cepat 2 ABI + Gradle paralel; sebelumnya 2026-11-04.3: KHUSUS APK BIASA: cabang Gradle native/Genetic dihapus total dari workflow ini, Genetic hanya di build-android.yml; alur dispatch/payload/unduh ZIP/artifact apk-jobId mengikuti AMBIL_ALURGH; sebelumnya 2026-11-04.2 jalur dipisah via payload.projectType; 2026-11-04.1 alur Flutter mode ZIP disamakan dengan worker VPS; 2026-11-01.2 samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; 2026-10-27.2 tambah Free disk space)
+          # [bot-workflow] rev=2026-11-07.3 (pub get: langkah C dependency_overrides 3 kandidat (git/host/any) dipilih lewat tes compile cepat, untuk konflik package git seperti better_player; sebelumnya 2026-11-07.2: dependency_overrides any; sebelumnya 2026-11-07.1: jenis jalur wajib eksplisit, tidak ada tebakan; sebelumnya 2026-11-04.4: build cepat: Flutter 1 keputusan tanpa uji satu-satu, build ZIP pakai jalur cepat 2 ABI + Gradle paralel; sebelumnya 2026-11-04.3: KHUSUS APK BIASA: cabang Gradle native/Genetic dihapus total dari workflow ini, Genetic hanya di build-android.yml; alur dispatch/payload/unduh ZIP/artifact apk-jobId mengikuti AMBIL_ALURGH; sebelumnya 2026-11-04.2 jalur dipisah via payload.projectType; 2026-11-04.1 alur Flutter mode ZIP disamakan dengan worker VPS; 2026-11-01.2 samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; 2026-10-27.2 tambah Free disk space)
           # Tipe build: payload.buildType dulu (dikirim bot), cadangan input build_type, default release
           BUILD_TYPE=$(jq -r '.buildType // empty' payload.json)
           [ -z "$BUILD_TYPE" ] && BUILD_TYPE="${{ github.event.inputs.build_type }}"
@@ -67,8 +67,12 @@ jobs:
           # Workflow ini KHUSUS APK BIASA (Flutter). Jalur GENETIC (Android native) punya workflow sendiri
           # (build-android.yml) dan tidak pernah lewat sini.
           REQ_TYPE=$(jq -r '.projectType // empty' payload.json)
-          if [ "$REQ_TYPE" = "android" ]; then
-            echo "::error::Workflow ini KHUSUS APK BIASA (Flutter). Mode yang dipilih KHUSUS GENETIC (Android Java/Kotlin) harus memakai workflow build-android.yml."
+          if [ -n "$REQ_TYPE" ] && [ "$REQ_TYPE" != "flutter" ]; then
+            echo "::error::Workflow ini KHUSUS APK BIASA (Flutter). Mode yang dipilih ($REQ_TYPE) harus memakai workflow build-android.yml (KHUSUS GENETIC)."
+            exit 1
+          fi
+          if [ -z "$REQ_TYPE" ] && [ "$(jq -r '.mode // empty' payload.json)" = "zip" ]; then
+            echo "::error::Payload ZIP tidak membawa jenis build. Pilih KHUSUS APK BIASA atau KHUSUS GENETIC di bot lalu build ulang."
             exit 1
           fi
           echo "Mode: KHUSUS APK BIASA (Flutter)"
@@ -357,15 +361,67 @@ jobs:
                 console.log('::warning::Versi ' + pinned.v + ' dari ZIP tidak ada di rilis stable, pakai pemilihan biasa');
               } catch (e) { console.log('::warning::Gagal cek katalog untuk versi ZIP (' + e.message + '), pakai pemilihan biasa'); }
             }
+            // 1b) Tidak ada versi persis di ZIP -> tebak dari .metadata (revision Flutter saat project dibuat/dimigrasi),
+            //     dicocokkan ke hash rilis di katalog resmi. Versi default (FALLBACK) disimpan sebagai cadangan "alt":
+            //     dipakai sekali kalau kode Dart gagal dikompilasi dengan versi tebakan.
+            const outAlt = (v) => fs.appendFileSync(process.env.GITHUB_OUTPUT, 'alt=' + v + '\n');
+            function metaRevision() {
+              let t = ''; try { t = fs.readFileSync(dir + '/.metadata', 'utf8'); } catch (_) { return ''; }
+              const m = t.match(/(?:^|\n)version:[ \t]*\r?\n((?:[ \t]+.*\r?\n?)*)/);
+              if (!m) return '';
+              const r = m[1].match(/^[ \t]+revision:[ \t]*["']?([0-9a-fA-F]{7,40})["']?/m);
+              return r ? r[1].toLowerCase() : '';
+            }
+            const mrev = pinned ? '' : metaRevision();
+            if (mrev) {
+              try {
+                const rawM = process.env.FLUTTER_RELEASES_FILE ? fs.readFileSync(process.env.FLUTTER_RELEASES_FILE, 'utf8') : await get('https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json');
+                const hitM = (JSON.parse(rawM).releases || []).find((r) => r.channel === 'stable' && r.archive && r.hash && String(r.hash).toLowerCase().startsWith(mrev));
+                const okM = hitM && (!dartRange || !hitM.dart_sdk_version || satisfies(hitM.dart_sdk_version, dartRange)) && (!flutterRange || satisfies(hitM.version, flutterRange));
+                if (okM && hitM.version !== FALLBACK) {
+                  console.log('Versi ditebak dari .metadata: Flutter ' + hitM.version + ' (dart ' + hitM.dart_sdk_version + '), cadangan: ' + FALLBACK);
+                  outAlt(FALLBACK); out(hitM.version); return;
+                }
+                console.log('.metadata revision ' + mrev + ': ' + (hitM ? 'tidak cocok dengan batas pubspec / sama dengan default' : 'tidak ada di katalog stable') + ', pakai pemilihan biasa');
+              } catch (e) { console.log('::warning::Gagal membaca katalog untuk .metadata (' + e.message + '), pakai pemilihan biasa'); }
+            }
+            // 1c) .metadata tidak ada / tidak cocok -> tebak dari ZAMAN project: tanggal ubah pubspec.lock (atau pubspec.yaml) di ZIP.
+            //     Dipilih Flutter stable terbaru yang dirilis SEBELUM tanggal itu dan cocok dengan batas pubspec. Hanya dipakai kalau
+            //     project terakhir diubah sebelum rilis versi default (project lama); kalau tidak, versi default sudah cukup baru.
+            function projectDate() {
+              for (const f of ['pubspec.lock', 'pubspec.yaml']) {
+                try { const t = fs.statSync(dir + '/' + f).mtime; if (t && t.getFullYear() >= 2019) return t; } catch (_) {}
+              }
+              return null;
+            }
+            const pdate = pinned ? null : projectDate();
+            if (pdate) {
+              try {
+                const rawD = process.env.FLUTTER_RELEASES_FILE ? fs.readFileSync(process.env.FLUTTER_RELEASES_FILE, 'utf8') : await get('https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json');
+                const relsD = (JSON.parse(rawD).releases || []).filter((r) => r.channel === 'stable' && r.archive && r.version && r.release_date);
+                const defD = relsD.find((r) => r.version === FALLBACK);
+                const defDate = defD ? new Date(defD.release_date) : new Date('2025-11-12');
+                if (pdate < defDate) {
+                  const era = relsD
+                    .filter((r) => new Date(r.release_date) <= pdate && (!dartRange || !r.dart_sdk_version || satisfies(r.dart_sdk_version, dartRange)) && (!flutterRange || satisfies(r.version, flutterRange)))
+                    .sort((a, b) => new Date(b.release_date) - new Date(a.release_date))[0];
+                  if (era && era.version !== FALLBACK) {
+                    console.log('Project terakhir diubah ' + pdate.toISOString().slice(0, 10) + ' -> Flutter zaman itu: ' + era.version + ' (dart ' + era.dart_sdk_version + '), cadangan: ' + FALLBACK);
+                    fs.appendFileSync(process.env.GITHUB_OUTPUT, 'alt=' + FALLBACK + '\n'); out(era.version); return;
+                  }
+                }
+              } catch (e) { console.log('::warning::Gagal menebak versi dari tanggal project (' + e.message + '), pakai pemilihan biasa'); }
+            }
             // 2) Tidak ada versi di ZIP / tidak ditemukan -> alur biasa di bawah.
             // Jalur cepat: versi default cocok -> selesai, tanpa fetch katalog dan tanpa menimbang versi lain.
             if (satisfies(FALLBACK_DART, dartRange) && satisfies(FALLBACK, flutterRange)) { console.log('Flutter default ' + FALLBACK + ' cocok (jalur cepat)'); out(FALLBACK); return; }
             const raw = process.env.FLUTTER_RELEASES_FILE
               ? fs.readFileSync(process.env.FLUTTER_RELEASES_FILE, 'utf8')
               : await get('https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json');
-            // Lantai versi: jangan pernah di bawah FALLBACK (Dart 3.10). Package terbaru (mis. path_provider >=2.1.6) butuh Dart ^3.10.0,
-            // jadi Flutter lama yang cocok dengan batas atas pubspec justru membuat "version solving failed".
-            const stable = (JSON.parse(raw).releases || []).filter((r) => r.channel === 'stable' && r.archive && r.version && cmp(ver(r.version), ver(FALLBACK)) >= 0);
+            // Ikuti ZIP: tanpa lantai versi. Kalau 3.38.0 tidak cocok dengan batas pubspec (mis. sdk "<3.0.0"),
+            // pakai Flutter stable terbaru yang cocok dengan batas itu, termasuk yang lebih lama dari 3.38.0.
+            // Kalau ternyata sebuah dependency butuh Dart lebih baru, langkah pub get di bawah menaikkan Flutter otomatis.
+            const stable = (JSON.parse(raw).releases || []).filter((r) => r.channel === 'stable' && r.archive && r.version);
             stable.sort((a, b) => String(b.release_date || '').localeCompare(String(a.release_date || '')));
             const fits = (r) => (!dartRange || !r.dart_sdk_version || satisfies(r.dart_sdk_version, dartRange)) && (!flutterRange || satisfies(r.version, flutterRange));
             // Urutan sama dengan VPS: versi default dipakai kalau cocok, kalau tidak yang stable terbaru yang cocok.
@@ -373,7 +429,7 @@ jobs:
             if (def && fits(def)) { console.log('Flutter default ' + FALLBACK + ' cocok'); out(FALLBACK); return; }
             const pick = stable.find(fits);
             if (pick) { console.log('Flutter dipilih: ' + pick.version + ' (dart ' + pick.dart_sdk_version + ')'); out(pick.version); return; }
-            console.log('::warning::Tidak ada Flutter stable >= ' + FALLBACK + ' yang cocok dengan batas pubspec (sdk="' + dartRange + '"), pakai ' + FALLBACK + ' (batas atas SDK diabaikan)');
+            console.log('::warning::Tidak ada Flutter stable yang cocok dengan batas pubspec (sdk="' + dartRange + '"), pakai ' + FALLBACK + ' (batas atas SDK diabaikan)');
             out(FALLBACK);
           })().catch((e) => { console.log('::warning::Gagal memilih versi Flutter (' + e.message + '), pakai ' + FALLBACK); out(FALLBACK); });
           NODE
@@ -482,10 +538,175 @@ jobs:
 
       - name: Build Flutter APK
         working-directory: ${{ steps.detect.outputs.dir }}
+        env:
+          ALT_FLUTTER: ${{ steps.fv.outputs.alt }}
         run: |
           set -euo pipefail
           export BOT=true
           BT="$BUILD_TYPE"
+
+          # Skrip auto-fix error Dart (pola pasti saja, tanpa AI, tidak mengarang isi yang hilang dari ZIP)
+          cat > /tmp/autofix.js <<'AUTOFIX_JS'
+          'use strict';
+          // Auto-fix aman (tanpa AI, tanpa mengarang isi) untuk error kompilasi Dart yang polanya pasti.
+          // Pakai: node autofix.js <build.log> <root project>   Exit 0 = ada file diubah, 3 = tidak ada yang bisa diperbaiki.
+          const fs = require('fs');
+          const path = require('path');
+          const logPath = process.argv[2];
+          const root = path.resolve(process.argv[3] || '.');
+          const log = fs.readFileSync(logPath, 'utf8').replace(/\r/g, '');
+          const posix = (p) => p.split(path.sep).join('/');
+
+          let pkgName = '';
+          try { const m = fs.readFileSync(path.join(root, 'pubspec.yaml'), 'utf8').match(/^name:\s*["']?([A-Za-z0-9_]+)/m); if (m) pkgName = m[1]; } catch (_) {}
+
+          // ---- kumpulkan error dari log ----
+          function normFile(raw) {
+            let f = raw.replace(/\\/g, '/');
+            if (/\.pub-cache|^package:|^dart:|^file:/.test(f)) return null;
+            const abs = path.isAbsolute(f) ? f : path.join(root, f);
+            const rel = posix(path.relative(root, abs));
+            if (rel.startsWith('lib/') && fs.existsSync(path.join(root, rel))) return rel;
+            const i = f.lastIndexOf('lib/');
+            if (i >= 0 && fs.existsSync(path.join(root, f.slice(i)))) return f.slice(i);
+            return null;
+          }
+          const errors = [];
+          const re = /^(\S+?\.dart):(\d+):(\d+): Error: (.*)$/gm;
+          let m;
+          while ((m = re.exec(log))) {
+            const file = normFile(m[1]);
+            if (file) errors.push({ file, line: +m[2], col: +m[3], msg: m[4].trim() });
+          }
+          if (!errors.length) { console.log('autofix: tidak ada error Dart yang dikenali di log'); process.exit(3); }
+
+          // ---- file lib/ dan indeks deklarasi top-level ----
+          const libFiles = [];
+          (function walk(d) {
+            let ents = []; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; }
+            for (const e of ents) {
+              const p = path.join(d, e.name);
+              if (e.isDirectory()) { if (!/^(\.|build$)/.test(e.name)) walk(p); }
+              else if (e.name.endsWith('.dart')) libFiles.push(posix(path.relative(root, p)));
+            }
+          })(path.join(root, 'lib'));
+
+          const texts = new Map();
+          const read = (f) => { if (!texts.has(f)) texts.set(f, fs.readFileSync(path.join(root, f), 'utf8')); return texts.get(f); };
+          const edits = new Map(); // file -> [{start,end,text}]
+          const addEdit = (f, e) => { if (!edits.has(f)) edits.set(f, []); const l = edits.get(f); if (!l.some((x) => x.start === e.start && x.end === e.end)) l.push(e); };
+          const fixes = [];
+
+          function offsetOf(text, line, col) {
+            let off = 0;
+            for (let i = 1; i < line; i++) { const n = text.indexOf('\n', off); if (n < 0) return -1; off = n + 1; }
+            return off + col - 1;
+          }
+
+          // ---- 1) const yang tidak valid: hapus semua `const` yang membungkus, atau const -> final untuk deklarasi ----
+          const CONST_RE = /not a constant expression|Constant expression expected|isn't a const constructor|non-'const' constructor where a const|Invalid constant value|must be initialized with a constant|Cannot invoke a non-'const'|isn't a constant expression|can't be used in a constant|Not a constant expression/i;
+          function enclosingConsts(text, offset) {
+            const found = []; let depth = 0;
+            for (let i = offset - 1, steps = 0; i >= 0 && steps < 40000; i--, steps++) {
+              const c = text[i];
+              if (c === ')' || c === ']' || c === '}') depth++;
+              else if (c === '(' || c === '[' || c === '{') {
+                if (depth > 0) { depth--; continue; }
+                let j = i - 1;
+                while (j >= 0 && /\s/.test(text[j])) j--;
+                if (text[j] === '>') { let d = 0; for (; j >= 0; j--) { if (text[j] === '>') d++; else if (text[j] === '<') { d--; if (d === 0) { j--; break; } } } while (j >= 0 && /\s/.test(text[j])) j--; }
+                let k = j; while (k >= 0 && /[A-Za-z0-9_$.]/.test(text[k])) k--;
+                const before = text.slice(Math.max(0, k - 12), k + 1);
+                const cm = before.match(/(?:^|[^A-Za-z0-9_$])const\s*$/);
+                if (cm) { const end = k + 1; const start = end - (before.length - before.search(/const\s*$/)); found.push({ start, end }); }
+              }
+            }
+            return found;
+          }
+          for (const e of errors.filter((x) => CONST_RE.test(x.msg))) {
+            const text = read(e.file); const off = offsetOf(text, e.line, e.col); if (off < 0) continue;
+            if (/must be initialized with a constant/i.test(e.msg)) {
+              const ls = text.lastIndexOf('\n', off - 1) + 1; const le = text.indexOf('\n', off); const line = text.slice(ls, le < 0 ? undefined : le);
+              const cm = line.match(/\bconst\b/);
+              if (cm) { addEdit(e.file, { start: ls + cm.index, end: ls + cm.index + 5, text: 'final' }); fixes.push(`${e.file}:${e.line} const -> final (nilai bukan konstan)`); }
+              continue;
+            }
+            const cs = enclosingConsts(text, off);
+            if (cs.length) {
+              for (const c of cs) { let end = c.end; while (/\s/.test(text[end])) end++; addEdit(e.file, { start: c.start, end, text: '' }); }
+              fixes.push(`${e.file}:${e.line} hapus 'const' pembungkus (${cs.length}x)`);
+            } else {
+              // deklarasi: static const x = fungsi(); -> static final
+              let s = off; while (s > 0 && !';{}'.includes(text[s - 1])) s--;
+              const seg = text.slice(s, off); const cm = seg.match(/\bconst\b/);
+              if (cm) { addEdit(e.file, { start: s + cm.index, end: s + cm.index + 5, text: 'final' }); fixes.push(`${e.file}:${e.line} const -> final pada deklarasi`); }
+            }
+          }
+
+          // ---- 2) nama tidak terdefinisi: cari deklarasi top-level di file lain lalu tambah import ----
+          const UNDEF = [/Undefined name '(\w+)'/, /The getter '(\w+)' isn't defined for the (?:type|class)/, /The method '(\w+)' isn't defined for the (?:type|class)/, /The setter '(\w+)' isn't defined for the (?:type|class)/];
+          function topLevelDefs(name) {
+            const re = new RegExp('^(?:(?:final|const|var|late|static)\\s+)*(?:[A-Za-z_][\\w<>,?\\s]*\\s+)?' + name + '\\s*(?:=|\\(|;)', 'm');
+            const out = [];
+            for (const f of libFiles) {
+              let t; try { t = read(f); } catch (_) { continue; }
+              if (/^part of\b/m.test(t)) continue;
+              if (re.test(t) || new RegExp('^(?:class|enum|mixin|typedef|extension)\\s+' + name + '\\b', 'm').test(t)) out.push(f);
+            }
+            return out;
+          }
+          function addImport(file, importLine) {
+            const t = read(file);
+            if (t.includes(importLine)) return false;
+            let pos = 0; const re2 = /^(?:import|export)\s+[^;]+;[ \t]*\r?\n?/gm; let mm;
+            while ((mm = re2.exec(t))) pos = mm.index + mm[0].length;
+            addEdit(file, { start: pos, end: pos, text: importLine + '\n' });
+            return true;
+          }
+          const handledImports = new Set();
+          for (const e of errors) {
+            let name = null;
+            for (const r of UNDEF) { const x = e.msg.match(r); if (x) { name = x[1]; break; } }
+            if (!name) continue;
+            const key = e.file + '|' + name; if (handledImports.has(key)) continue; handledImports.add(key);
+            const defs = topLevelDefs(name).filter((f) => f !== e.file);
+            if (defs.length && pkgName) {
+              const target = defs[0];
+              if (addImport(e.file, `import 'package:${pkgName}/${target.replace(/^lib\//, '')}';`)) fixes.push(`${e.file}: '${name}' didefinisikan di ${target}, import ditambahkan`);
+            } else {
+              console.log(`::warning::autofix: '${name}' dipakai di ${e.file}:${e.line} tetapi tidak ada definisinya di project (kemungkinan file hilang dari ZIP). Tidak dikarang otomatis.`);
+            }
+          }
+
+          // ---- 3) import ke file yang tidak ada: cari file bernama sama di tempat lain di lib/ ----
+          for (const e of errors) {
+            const x = e.msg.match(/Error when reading '([^']+)': No such file or directory/); if (!x) continue;
+            const missing = x[1]; const base = path.posix.basename(missing).toLowerCase();
+            const cands = libFiles.filter((f) => path.posix.basename(f).toLowerCase() === base && f !== missing);
+            if (!cands.length) { console.log(`::warning::autofix: ${missing} tidak ada di ZIP dan tidak ada file bernama sama di lib/ (file hilang dari ZIP)`); continue; }
+            const target = cands.sort((a, b) => b.split('/').filter((s) => missing.includes(s)).length - a.split('/').filter((s) => missing.includes(s)).length)[0];
+            const text = read(e.file); const ls = offsetOf(text, e.line, 1); const le = text.indexOf('\n', ls); const line = text.slice(ls, le < 0 ? undefined : le);
+            const q = line.match(/(['"])([^'"]+)\1/); if (!q) continue;
+            const old = q[2]; let neu;
+            if (old.startsWith('package:')) neu = `package:${pkgName || old.split('/')[0].slice(8)}/${target.replace(/^lib\//, '')}`;
+            else { neu = posix(path.relative(path.dirname(e.file), target)); }
+            const at = ls + line.indexOf(q[0]) + 1;
+            addEdit(e.file, { start: at, end: at + old.length, text: neu });
+            fixes.push(`${e.file}:${e.line} import ${old} -> ${neu} (file ada di ${target})`);
+          }
+
+          // ---- terapkan ----
+          let changed = 0;
+          for (const [f, list] of edits) {
+            let t = read(f);
+            for (const ed of list.sort((a, b) => b.start - a.start)) t = t.slice(0, ed.start) + ed.text + t.slice(ed.end);
+            fs.writeFileSync(path.join(root, f), t); changed++;
+          }
+          for (const f of fixes) console.log('AUTOFIX: ' + f);
+          if (!changed) { console.log('autofix: tidak ada perbaikan otomatis yang cocok'); process.exit(3); }
+          console.log(`autofix: ${changed} file diubah, ${fixes.length} perbaikan`);
+          process.exit(0);
+          AUTOFIX_JS
 
           # 1) Java 17, kecuali Gradle project < 7.6 memakai Java 11
           WRAPPER_PROPS="android/gradle/wrapper/gradle-wrapper.properties"
@@ -518,9 +739,224 @@ jobs:
             fi
           fi
 
+          # Pasang satu rilis Flutter dari arsip resmi dan jadikan itu "flutter" aktif (dir terpisah per versi)
+          install_flutter_archive() {
+            local FV="$1" AR="$2"
+            echo "⬆️ Pasang Flutter $FV (arsip $AR)"
+            mkdir -p "$HOME/flutter_$FV"
+            curl -fsSL -o /tmp/flutter_dl.tar.xz "https://storage.googleapis.com/flutter_infra_release/releases/$AR" || return 1
+            tar -xf /tmp/flutter_dl.tar.xz -C "$HOME/flutter_$FV" || return 1
+            rm -f /tmp/flutter_dl.tar.xz
+            export FLUTTER_ROOT="$HOME/flutter_$FV/flutter"
+            export PATH="$FLUTTER_ROOT/bin:$PATH"
+            git config --global --add safe.directory "$FLUTTER_ROOT" 2>/dev/null || true
+            flutter config --no-analytics >/dev/null 2>&1 || true
+            flutter config --jdk-dir "$JAVA_HOME" >/dev/null 2>&1 || true
+            [ -n "${SDK:-}" ] && flutter config --android-sdk "$SDK" >/dev/null 2>&1 || true
+            flutter --version
+            return 0
+          }
+
+          # Pasang Flutter stable dengan nomor versi persis (dicari di katalog resmi)
+          install_flutter_version() {
+            local WANT="$1" AR
+            AR=$(WANT="$WANT" node - <<'NODE3'
+          const https = require('https');
+          https.get('https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json', (res) => {
+            let d = ''; res.on('data', (c) => d += c);
+            res.on('end', () => {
+              try {
+                const r = (JSON.parse(d).releases || []).find((x) => x.channel === 'stable' && x.archive && x.version === process.env.WANT);
+                if (r) console.log(r.archive);
+              } catch (e) {}
+            });
+          }).on('error', () => {});
+          NODE3
+            )
+            if [ -z "$AR" ]; then echo "::warning::Flutter $WANT tidak ada di katalog stable"; return 1; fi
+            install_flutter_archive "$WANT" "$AR"
+          }
+
+          # 3a-0) Dependency (mis. better_player dari git) butuh Dart SDK lebih baru dari Flutter terpilih
+          #       ("requires SDK version >=3.12.0"). Pasang Flutter stable terendah yang Dart-nya cukup.
+          upgrade_flutter_for_dart() {
+            local NEED="$1"
+            echo "ℹ️ Dependency butuh Dart >= $NEED, mencari Flutter stable yang cocok"
+            local PICK
+            PICK=$(NEED="$NEED" node - <<'NODE2'
+          const https = require('https');
+          const need = process.env.NEED.split('.').map(Number);
+          while (need.length < 3) need.push(0);
+          const cmp = (a, b) => { for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; };
+          https.get('https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json', (res) => {
+            let d = ''; res.on('data', (c) => d += c);
+            res.on('end', () => {
+              try {
+                const rel = (JSON.parse(d).releases || []).filter((r) => r.channel === 'stable' && r.archive && r.dart_sdk_version);
+                const ok = rel.filter((r) => { const m = String(r.dart_sdk_version).match(/(\d+)\.(\d+)\.(\d+)/); return m && cmp([+m[1], +m[2], +m[3]], need) >= 0 && +m[1] < 4; });
+                // Ambil yang paling lama (lompatan versi sekecil mungkin supaya project tidak banyak rusak)
+                ok.sort((a, b) => String(a.release_date).localeCompare(String(b.release_date)));
+                if (ok.length) console.log(ok[0].version + ' ' + ok[0].archive);
+              } catch (e) {}
+            });
+          }).on('error', () => {});
+          NODE2
+            )
+            if [ -z "$PICK" ]; then echo "::warning::Tidak ada Flutter stable dengan Dart >= $NEED di katalog resmi"; return 1; fi
+            install_flutter_archive "${PICK%% *}" "${PICK#* }"
+            return $?
+          }
+
+          # 3a) pub get yang tahan konflik versi dependency ("version solving failed").
+          #     Ini beda dengan versi Flutter SDK: ini konflik batas versi antar package di pubspec.yaml.
+          resolve_pub_get() {
+            flutter pub get 2>&1 | tee pub_get.log
+            local RCP=${PIPESTATUS[0]}
+            [ "$RCP" -eq 0 ] && return 0
+            if [ -f pubspec.lock ]; then
+              echo "⚠️ pub get gagal dengan pubspec.lock dari ZIP, coba ulang tanpa lock"
+              rm -f pubspec.lock
+              flutter pub get 2>&1 | tee pub_get.log
+              RCP=${PIPESTATUS[0]}
+              [ "$RCP" -eq 0 ] && return 0
+            fi
+            if ! grep -qiE 'version solving failed|Because .* depends on|requires SDK version' pub_get.log; then return "$RCP"; fi
+            NEED_DART=$(grep -oE 'SDK version >=[0-9]+\.[0-9]+(\.[0-9]+)?' pub_get.log | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -V | tail -n 1 || true)
+            if [ -n "$NEED_DART" ] && upgrade_flutter_for_dart "$NEED_DART"; then
+              rm -f pubspec.lock
+              flutter pub get 2>&1 | tee pub_get.log
+              [ "${PIPESTATUS[0]}" -eq 0 ] && { echo "✅ pub get berhasil setelah Flutter dinaikkan"; return 0; }
+            fi
+            echo "⚠️ Konflik versi dependency terdeteksi, mencoba perbaikan otomatis (pubspec asli disimpan)"
+            cp pubspec.yaml pubspec.yaml.orig
+            OWN_PKG=$(grep -m1 -E '^name:' pubspec.yaml | sed -E 's/^name:[[:space:]]*//; s/["'"'"'[:space:]]//g' || true)
+            # Langkah A: longgarkan batas versi package hosted yang disebut di error (^2.5.3 -> any),
+            # supaya pub memilih versi yang cocok dengan package git/lainnya.
+            NAMES=$(grep -oE '(depends on( both)?|and) [a-z_][a-z0-9_]*' pub_get.log | awk '{print $NF}' | sort -u | grep -vxE "flutter|sdk|${OWN_PKG:-__none__}" || true)
+            CHANGED=0
+            for N in $NAMES; do
+              if grep -qE "^  $N:[[:space:]]*[\\^<>=~0-9'\"]" pubspec.yaml; then
+                sed -i -E "s/^(  $N:)[[:space:]]*[\\^<>=~0-9'\"][^#]*/\\1 any/" pubspec.yaml
+                echo "  longgarkan versi: $N -> any"; CHANGED=1
+              fi
+            done
+            if [ "$CHANGED" -eq 1 ]; then
+              rm -f pubspec.lock
+              flutter pub get 2>&1 | tee pub_get.log
+              [ "${PIPESTATUS[0]}" -eq 0 ] && { echo "✅ Konflik beres dengan melonggarkan versi package"; return 0; }
+              cp pubspec.yaml.orig pubspec.yaml
+            fi
+            # Langkah C: dependency_overrides, dipilih oleh COMPILER (bukan ditebak). Dipakai kalau konflik datang dari
+            # package git/path (mis. better_player) yang batas versinya tidak bisa dilonggarkan lewat pubspec project.
+            # Package hosted yang disebut di rantai konflik di-override dengan 3 kandidat, berurutan:
+            #   git  = batas versi yang diminta package git/path (kode package git tidak bisa diubah, jadi dijaga dulu)
+            #   host = batas versi yang diminta package hosted lain
+            #   any  = tanpa batas (versi terbaru)
+            # Tiap kandidat yang lolos pub get dites compile cepat (flutter build bundle = kompilasi Dart ke kernel,
+            # tanpa Gradle). Kandidat pertama yang compile dipakai. Kalau tidak ada yang compile, kandidat pertama yang
+            # lolos pub get tetap dipakai supaya build asli menampilkan error sebenarnya. Package git/path/sdk tidak
+            # pernah di-override (sumbernya tidak boleh berganti jadi hosted).
+            cp pub_get.log pub_conflict.log
+            CAND=""; TRIED=""
+            for MODE in git host any; do
+              cp pubspec.yaml.orig pubspec.yaml
+              cp pub_conflict.log pub_get.log
+              PUB_OK=0
+              for ROUND in 1 2 3; do
+                ADDED=$(MODE="$MODE" node - <<'NODE_OVR'
+          const fs = require('fs');
+          const mode = process.env.MODE;
+          const log = fs.readFileSync('pub_get.log', 'utf8');
+          let y = fs.readFileSync('pubspec.yaml', 'utf8');
+          const own = ((y.match(/^name:\s*["']?([A-Za-z0-9_]+)/m) || [])[1]) || '__none__';
+          const skip = new Set(['flutter', 'sdk', 'dart', 'which', 'flutter_test', 'flutter_web_plugins', 'flutter_localizations', own]);
+          const lines = y.split('\n');
+          const nonHosted = (n) => {
+            for (let i = 0; i < lines.length; i++) {
+              const m = lines[i].match(new RegExp('^  ' + n + ':\\s*(.*)$'));
+              if (!m) continue;
+              if (/\b(git|path|sdk)\b/.test(m[1])) return true;
+              for (let j = i + 1; j < lines.length; j++) {
+                if (/^\s*(#.*)?$/.test(lines[j])) continue;
+                if (/^ {4,}/.test(lines[j])) { if (/^\s+(git|path|sdk):/.test(lines[j])) return true; } else break;
+              }
+              return false;
+            }
+            return false;
+          };
+          const existing = new Set();
+          const ov = y.match(/^dependency_overrides:[ \t]*\n((?:[ \t]+.*\n?|\n)*)/m);
+          if (ov) for (const l of ov[1].split('\n')) { const m = l.match(/^  ([a-z_][a-z0-9_]*):/); if (m) existing.add(m[1]); }
+          const found = new Set();
+          const re = /(?:depends on(?: both)?|\band|\bor)\s+([a-z_][a-z0-9_]*)\s+(?:[\^<>=~]|\d|any\b|from\b)/g;
+          let m;
+          while ((m = re.exec(log))) found.add(m[1]);
+          // Siapa meminta versi berapa: "<subjek> [from git | <versi>] depends on <paket> <batas>"
+          const gitC = {}, hostC = {};
+          const cre = /([a-z_][a-z0-9_]*)(?:\s+from\s+(git|path))?(?:\s+[\^<>=~]*\d[^\s,]*(?:\s+<=?\d[^\s,]*)?)?\s+depends on\s+([a-z_][a-z0-9_]*)\s+([\^<>=~]*\d[^\s,]*(?:\s+<=?\d[^\s,]*)?|any)/g;
+          while ((m = cre.exec(log))) {
+            const subj = m[1], tgt = m[3], c = m[4].replace(/[.;]+$/, '');
+            if (subj === 'which' || subj === own) continue;
+            const map = (m[2] || nonHosted(subj)) ? gitC : hostC;
+            if (!map[tgt]) map[tgt] = c;
+          }
+          const add = [...found].filter((n) => !skip.has(n) && !existing.has(n) && !nonHosted(n));
+          if (!add.length) process.exit(0);
+          const val = (n) => mode === 'git' ? (gitC[n] || 'any') : mode === 'host' ? (hostC[n] || 'any') : 'any';
+          const q = (v) => (v === 'any' || /^\^?\d[^\s]*$/.test(v)) ? v : "'" + v + "'";
+          const block = add.map((n) => '  ' + n + ': ' + q(val(n))).join('\n');
+          if (/^dependency_overrides:[ \t]*$/m.test(y)) {
+            y = y.replace(/^dependency_overrides:[ \t]*$/m, (h) => h + '\n' + block);
+          } else {
+            y = y.replace(/\s*$/, '\n') + '\ndependency_overrides:\n' + block + '\n';
+          }
+          fs.writeFileSync('pubspec.yaml', y);
+          console.log(add.map((n) => n + '=' + val(n)).join(' '));
+          NODE_OVR
+                )
+                [ -z "$ADDED" ] && break
+                if [ "$ROUND" -eq 1 ]; then
+                  SUM=$(md5sum pubspec.yaml | cut -d' ' -f1)
+                  case " $TRIED " in *" $SUM "*) ADDED=""; break ;; esac
+                  TRIED="$TRIED $SUM"
+                fi
+                echo "  [override:$MODE] putaran $ROUND: $ADDED"
+                rm -f pubspec.lock
+                flutter pub get 2>&1 | tee pub_get.log
+                if [ "${PIPESTATUS[0]}" -eq 0 ]; then PUB_OK=1; break; fi
+              done
+              [ "$PUB_OK" -eq 1 ] || continue
+              if [ ! -f lib/main.dart ]; then
+                echo "::warning::Konflik beres lewat dependency_overrides [$MODE] ($ADDED), compile belum dites (lib/main.dart tidak ada)"
+                return 0
+              fi
+              echo "🔎 [override:$MODE] pub get lolos, tes compile cepat (flutter build bundle)"
+              if timeout 900 flutter build bundle > bundle_check.log 2>&1; then
+                echo "✅ Konflik beres dengan dependency_overrides [$MODE] dan compile lolos: $ADDED"
+                return 0
+              fi
+              echo "⚠️ [override:$MODE] compile gagal, coba kandidat berikutnya:"
+              grep -E 'Error|error:' bundle_check.log | head -n 5 || true
+              if [ -z "$CAND" ]; then CAND="$MODE"; cp pubspec.yaml pubspec.yaml.cand; cp pubspec.lock pubspec.lock.cand 2>/dev/null || true; fi
+            done
+            if [ -n "$CAND" ]; then
+              cp pubspec.yaml.cand pubspec.yaml; cp pubspec.lock.cand pubspec.lock 2>/dev/null || true
+              echo "::warning::Tidak ada kandidat override yang lolos tes compile. Memakai [$CAND]; error aslinya akan muncul di build. Ganti package git itu di pubspec bila perlu."
+              return 0
+            fi
+            cp pubspec.yaml.orig pubspec.yaml
+            # Langkah B: naikkan semua constraint hosted ke versi terbaru yang saling cocok
+            rm -f pubspec.lock
+            flutter pub upgrade --major-versions 2>&1 | tee pub_get.log
+            if [ "${PIPESTATUS[0]}" -eq 0 ]; then echo "✅ Konflik beres dengan pub upgrade --major-versions"; return 0; fi
+            cp pubspec.yaml.orig pubspec.yaml
+            echo "::error::Konflik dependency tidak bisa diselesaikan otomatis. Lihat pub_get.log"
+            return "$RCP"
+          }
+
           # 3) pub get (tanpa flutter clean: runner baru + langkah "Clean stale artifacts" sudah bersih)
           if [ "$MODE" != "url" ]; then
-            flutter pub get
+            resolve_pub_get
             if [ -f pubspec.yaml ] && grep -q "flutter_launcher_icons:" pubspec.yaml; then
               flutter pub run flutter_launcher_icons || echo "::warning::Pembuatan ikon launcher gagal, build lanjut"
             fi
@@ -607,6 +1043,36 @@ jobs:
               flutter pub get 2>&1 | tail -n 3 || true
               $BUILD_CMD 2>&1 | tee -a build.log
               RC=${PIPESTATUS[0]}
+            fi
+          fi
+          # AUTO-FIX aman: error kompilasi Dart dengan pola pasti (const tidak valid, lupa import, import ke file yang salah letak)
+          # diperbaiki otomatis lalu build diulang, maksimal 2 putaran. Isi yang hilang dari ZIP TIDAK dikarang.
+          if [ "$RC" -ne 0 ] && [ "$MODE" != "url" ]; then
+            for ROUND in 1 2; do
+              [ "$RC" -ne 0 ] || break
+              grep -qE "\.dart:[0-9]+:[0-9]+: Error:" build.log || break
+              cp build.log "build_before_autofix_$ROUND.log"
+              node /tmp/autofix.js build.log . 2>&1 | tee -a autofix.log
+              [ "${PIPESTATUS[0]}" -eq 0 ] || break
+              echo "🔧 Auto-fix putaran $ROUND diterapkan, build ulang"
+              $BUILD_CMD 2>&1 | tee build.log
+              RC=${PIPESTATUS[0]}
+            done
+          fi
+          # Versi Flutter hasil tebakan (.metadata) membuat kode Dart gagal dikompilasi: coba SEKALI dengan versi cadangan (default bot).
+          # Dilewati kalau errornya file yang hilang di ZIP (tidak akan tertolong ganti versi).
+          if [ "$RC" -ne 0 ] && [ "$MODE" != "url" ] && [ -n "${ALT_FLUTTER:-}" ] \
+             && ! grep -q "Error when reading" build.log \
+             && grep -qE "\.dart:[0-9]+:[0-9]+: Error:" build.log; then
+            echo "↩️ Kode Dart gagal dikompilasi dengan Flutter hasil tebakan, coba sekali dengan Flutter $ALT_FLUTTER"
+            cp build.log build_first_try.log
+            if install_flutter_version "$ALT_FLUTTER"; then
+              sed -i "s|^flutter.sdk=.*|flutter.sdk=$FLUTTER_ROOT|" android/local.properties 2>/dev/null || true
+              rm -rf .dart_tool build android/.gradle android/build android/app/build
+              if resolve_pub_get; then
+                $BUILD_CMD 2>&1 | tee -a build.log
+                RC=${PIPESTATUS[0]}
+              fi
             fi
           fi
           exit $RC
@@ -712,6 +1178,8 @@ jobs:
           name: build-log-${{ github.event.inputs.jobId }}
           path: |
             ${{ steps.detect.outputs.dir }}/build.log
+            ${{ steps.detect.outputs.dir }}/autofix.log
+            ${{ steps.detect.outputs.dir }}/build_before_autofix_*.log
             ${{ steps.detect.outputs.dir }}/android/build.log
           if-no-files-found: ignore
           retention-days: 1
