@@ -821,7 +821,7 @@ jobs:
               [ "$RCP" -eq 0 ] && return 0
             fi
             if ! grep -qiE 'version solving failed|Because .* depends on|requires SDK version' pub_get.log; then return "$RCP"; fi
-            NEED_DART=$(grep -oE 'SDK version >=[0-9]+\.[0-9]+(\.[0-9]+)?' pub_get.log | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -V | tail -n 1 || true)
+            NEED_DART=$(grep -oE 'SDK version (>=|\^)[0-9]+\.[0-9]+(\.[0-9]+)?' pub_get.log | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -V | tail -n 1 || true)
             if [ -n "$NEED_DART" ] && upgrade_flutter_for_dart "$NEED_DART"; then
               rm -f pubspec.lock
               flutter pub get 2>&1 | tee pub_get.log
@@ -984,7 +984,8 @@ jobs:
 
           # 3) pub get (tanpa flutter clean: runner baru + langkah "Clean stale artifacts" sudah bersih)
           if [ "$MODE" != "url" ]; then
-            resolve_pub_get
+            # "|| exit $?" wajib: tanpa ini, set -e mematikan script di pub get pertama yang gagal dan perbaikan otomatis tidak pernah jalan
+            resolve_pub_get || exit $?
             if [ -f pubspec.yaml ] && grep -q "flutter_launcher_icons:" pubspec.yaml; then
               flutter pub run flutter_launcher_icons || echo "::warning::Pembuatan ikon launcher gagal, build lanjut"
             fi
