@@ -807,6 +807,38 @@ jobs:
             return $?
           }
 
+          # 3a-ns) Plugin Android lama (mis. better_player dari git) tidak punya `namespace` di build.gradle,
+          #        padahal AGP 8+ mewajibkannya: build gagal "A problem occurred configuring project ':nama_plugin'".
+          #        Tambahkan namespace (diambil dari package di AndroidManifest plugin) ke plugin yang belum punya.
+          patch_plugin_namespace() {
+            [ -f .dart_tool/package_config.json ] || return 0
+            echo "🔧 Cek namespace plugin Android"
+            node - <<'NODE_NS' || true
+          const fs = require('fs'), path = require('path'), { fileURLToPath, pathToFileURL } = require('url');
+          const base = pathToFileURL(path.resolve('.dart_tool') + path.sep);
+          let cfg; try { cfg = JSON.parse(fs.readFileSync('.dart_tool/package_config.json', 'utf8')); } catch (e) { process.exit(0); }
+          const app = path.resolve('.');
+          for (const p of cfg.packages || []) {
+            let root; try { root = fileURLToPath(new URL(p.rootUri.endsWith('/') ? p.rootUri : p.rootUri + '/', base)); } catch (e) { continue; }
+            if (path.resolve(root) === app) continue;
+            for (const [fn, kts] of [['build.gradle', false], ['build.gradle.kts', true]]) {
+              const g = path.join(root, 'android', fn);
+              if (!fs.existsSync(g)) continue;
+              let s = fs.readFileSync(g, 'utf8');
+              if (/^\s*namespace\s*[=\s'"]/m.test(s)) break;
+              let pkg = null;
+              try { pkg = (fs.readFileSync(path.join(root, 'android/src/main/AndroidManifest.xml'), 'utf8').match(/package\s*=\s*"([^"]+)"/) || [])[1]; } catch (e) {}
+              if (!pkg) pkg = 'patched.' + p.name.replace(/[^a-zA-Z0-9_]/g, '_');
+              const line = kts ? `namespace = "${pkg}"` : `namespace '${pkg}'`;
+              const out = s.replace(/^(\s*)android\s*\{/m, (m, i) => `${m}\n${i}    ${line}`);
+              if (out !== s) { fs.writeFileSync(g, out); console.log(`  namespace ditambah: ${p.name} -> ${pkg}`); }
+              break;
+            }
+          }
+          NODE_NS
+            return 0
+          }
+
           # 3a) pub get yang tahan konflik versi dependency ("version solving failed").
           #     Ini beda dengan versi Flutter SDK: ini konflik batas versi antar package di pubspec.yaml.
           resolve_pub_get() {
@@ -986,6 +1018,7 @@ jobs:
           if [ "$MODE" != "url" ]; then
             # "|| exit $?" wajib: tanpa ini, set -e mematikan script di pub get pertama yang gagal dan perbaikan otomatis tidak pernah jalan
             resolve_pub_get || exit $?
+            patch_plugin_namespace
             if [ -f pubspec.yaml ] && grep -q "flutter_launcher_icons:" pubspec.yaml; then
               flutter pub run flutter_launcher_icons || echo "::warning::Pembuatan ikon launcher gagal, build lanjut"
             fi
@@ -1099,6 +1132,7 @@ jobs:
               sed -i "s|^flutter.sdk=.*|flutter.sdk=$FLUTTER_ROOT|" android/local.properties 2>/dev/null || true
               rm -rf .dart_tool build android/.gradle android/build android/app/build
               if resolve_pub_get; then
+                patch_plugin_namespace
                 $BUILD_CMD 2>&1 | tee -a build.log
                 RC=${PIPESTATUS[0]}
               fi
