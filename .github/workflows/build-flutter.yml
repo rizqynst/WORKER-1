@@ -57,7 +57,7 @@ jobs:
           echo '${{ github.event.inputs.payload }}' > payload.json
           cat payload.json
 
-          # [bot-workflow] rev=2026-11-09.1 (resep build: build sukses menulis recipe.json (versi Flutter yang dipakai) dan mengunggahnya sebagai artifact recipe-jobId untuk dicatat bot; sebelumnya 2026-11-07.4: pub get: kandidat terakhir mengganti package git yang konflik ke versi pub.dev; sebelumnya 2026-11-07.3: pub get: langkah C dependency_overrides 3 kandidat (git/host/any) dipilih lewat tes compile cepat, untuk konflik package git seperti better_player; sebelumnya 2026-11-07.2: dependency_overrides any; sebelumnya 2026-11-07.1: jenis jalur wajib eksplisit, tidak ada tebakan; sebelumnya 2026-11-04.4: build cepat: Flutter 1 keputusan tanpa uji satu-satu, build ZIP pakai jalur cepat 2 ABI + Gradle paralel; sebelumnya 2026-11-04.3: KHUSUS APK BIASA: cabang Gradle native/Genetic dihapus total dari workflow ini, Genetic hanya di build-android.yml; alur dispatch/payload/unduh ZIP/artifact apk-jobId mengikuti AMBIL_ALURGH; sebelumnya 2026-11-04.2 jalur dipisah via payload.projectType; 2026-11-04.1 alur Flutter mode ZIP disamakan dengan worker VPS; 2026-11-01.2 samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; 2026-10-27.2 tambah Free disk space)
+          # [bot-workflow] rev=2026-11-10.1 (autofix Gradle: minSdk dinaikkan otomatis sesuai pesan manifest merger, ndkVersion dinaikkan/dipasang saat build gagal karena NDK; sebelumnya 2026-11-09.1: resep build: build sukses menulis recipe.json (versi Flutter yang dipakai) dan mengunggahnya sebagai artifact recipe-jobId untuk dicatat bot; sebelumnya 2026-11-07.4: pub get: kandidat terakhir mengganti package git yang konflik ke versi pub.dev; sebelumnya 2026-11-07.3: pub get: langkah C dependency_overrides 3 kandidat (git/host/any) dipilih lewat tes compile cepat, untuk konflik package git seperti better_player; sebelumnya 2026-11-07.2: dependency_overrides any; sebelumnya 2026-11-07.1: jenis jalur wajib eksplisit, tidak ada tebakan; sebelumnya 2026-11-04.4: build cepat: Flutter 1 keputusan tanpa uji satu-satu, build ZIP pakai jalur cepat 2 ABI + Gradle paralel; sebelumnya 2026-11-04.3: KHUSUS APK BIASA: cabang Gradle native/Genetic dihapus total dari workflow ini, Genetic hanya di build-android.yml; alur dispatch/payload/unduh ZIP/artifact apk-jobId mengikuti AMBIL_ALURGH; sebelumnya 2026-11-04.2 jalur dipisah via payload.projectType; 2026-11-04.1 alur Flutter mode ZIP disamakan dengan worker VPS; 2026-11-01.2 samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; 2026-10-27.2 tambah Free disk space)
           # Tipe build: payload.buildType dulu (dikirim bot), cadangan input build_type, default release
           BUILD_TYPE=$(jq -r '.buildType // empty' payload.json)
           [ -z "$BUILD_TYPE" ] && BUILD_TYPE="${{ github.event.inputs.build_type }}"
@@ -1090,6 +1090,59 @@ jobs:
               [ -x "$SDKM" ] && { [ -d "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/platforms/android-$NEED" ] || yes | "$SDKM" "platforms;android-$NEED" >/dev/null 2>&1 || true; }
               $BUILD_CMD 2>&1 | tee -a build.log
               RC=${PIPESTATUS[0]}
+            fi
+          fi
+          # minSdk terlalu rendah ("uses-sdk:minSdkVersion 21 cannot be smaller than version 23 declared in library ..."):
+          # naikkan minSdk project ke angka tertinggi yang diminta library, lalu build ulang SEKALI.
+          # Tidak memakai tools:overrideLibrary (itu hanya membungkam error dan bisa crash di HP lama).
+          if [ "$RC" -ne 0 ] && grep -qE "minSdkVersion [0-9]+ cannot be smaller than version [0-9]+" build.log; then
+            NEED_MIN=$(grep -oE "cannot be smaller than version [0-9]+" build.log | grep -oE '[0-9]+' | sort -nr | head -n 1)
+            GF=""
+            for f in android/app/build.gradle.kts android/app/build.gradle; do [ -f "$f" ] && { GF="$f"; break; }; done
+            if [ -n "$NEED_MIN" ] && [ -n "$GF" ]; then
+              cp "$GF" /tmp/gradle_before_minsdk
+              # bentuk: minSdk = 21 | minSdkVersion 21 | minSdk = flutter.minSdkVersion | minSdkVersion(21)
+              sed -i -E "s/minSdk(Version)?([[:space:]]*=[[:space:]]*|[[:space:]]+)[^[:space:]]+/minSdk\1\2$NEED_MIN/" "$GF"
+              sed -i -E "s/minSdk(Version)?\([^)]*\)/minSdk\1($NEED_MIN)/" "$GF"
+              if ! cmp -s "$GF" /tmp/gradle_before_minsdk; then
+                echo "AUTOFIX: minSdk dinaikkan ke $NEED_MIN di $GF" | tee -a autofix.log
+                grep -nE "minSdk" "$GF" | head -n 3 || true
+                $BUILD_CMD 2>&1 | tee -a build.log
+                RC=${PIPESTATUS[0]}
+              else
+                echo "::warning::minSdk perlu $NEED_MIN tetapi baris minSdk tidak ditemukan/tidak berubah di $GF (mungkin diatur lewat variabel lain). Naikkan manual."
+              fi
+            fi
+          fi
+          # NDK bermasalah (plugin butuh NDK lebih tinggi / "No version of NDK matched" / NDK tidak terpasang utuh):
+          # set ndkVersion ke versi yang diminta, pasang NDK-nya lewat sdkmanager, lalu build ulang SEKALI.
+          # Peringatan "plugin requires Android NDK X" saja BUKAN kegagalan, jadi hanya dijalankan kalau build gagal dengan tanda NDK/native.
+          if [ "$RC" -ne 0 ] && grep -qiE 'CXX[0-9]+|source\.properties|No version of NDK|ld\.lld|clang(\+\+)?: error|NDK .*(not installed|not found)' build.log; then
+            NDK_NEED=$(grep -oE "requires Android NDK [0-9]+(\.[0-9]+)+" build.log | grep -oE '[0-9]+(\.[0-9]+)+' | sort -V | tail -n 1)
+            [ -z "$NDK_NEED" ] && NDK_NEED=$(grep -oE "No version of NDK matched the requested version [0-9]+(\.[0-9]+)+" build.log | grep -oE '[0-9]+(\.[0-9]+)+$' | sort -V | tail -n 1)
+            GF=""
+            for f in android/app/build.gradle.kts android/app/build.gradle; do [ -f "$f" ] && { GF="$f"; break; }; done
+            if [ -n "$NDK_NEED" ] && [ -n "$GF" ]; then
+              DO_RETRY=0
+              cp "$GF" /tmp/gradle_before_ndk
+              if grep -qE "ndkVersion" "$GF"; then
+                sed -i -E "s/ndkVersion([[:space:]]*=[[:space:]]*|[[:space:]]+)[^[:space:]]+/ndkVersion = \"$NDK_NEED\"/" "$GF"
+              else
+                sed -i -E "0,/^android[[:space:]]*\{/s//&\n    ndkVersion = \"$NDK_NEED\"/" "$GF"
+              fi
+              cmp -s "$GF" /tmp/gradle_before_ndk || { DO_RETRY=1; echo "AUTOFIX: ndkVersion diset ke $NDK_NEED di $GF" | tee -a autofix.log; }
+              grep -nE "ndkVersion" "$GF" | head -n 3 || true
+              SDKM="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/cmdline-tools/latest/bin/sdkmanager"
+              NDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/ndk/$NDK_NEED"
+              if [ -x "$SDKM" ] && [ ! -f "$NDK_DIR/source.properties" ]; then
+                rm -rf "$NDK_DIR" 2>/dev/null || true
+                yes | "$SDKM" "ndk;$NDK_NEED" >/dev/null 2>&1 || true
+                [ -f "$NDK_DIR/source.properties" ] && { DO_RETRY=1; echo "AUTOFIX: NDK $NDK_NEED dipasang" | tee -a autofix.log; }
+              fi
+              if [ "$DO_RETRY" -eq 1 ]; then
+                $BUILD_CMD 2>&1 | tee -a build.log
+                RC=${PIPESTATUS[0]}
+              fi
             fi
           fi
           # Package dipakai di kode tapi belum ditulis di pubspec.yaml ("Couldn't resolve the package 'x'"):
