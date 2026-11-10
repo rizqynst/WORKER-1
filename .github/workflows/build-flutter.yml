@@ -57,7 +57,7 @@ jobs:
           echo '${{ github.event.inputs.payload }}' > payload.json
           cat payload.json
 
-          # [bot-workflow] rev=2026-11-07.4 (pub get: kandidat terakhir mengganti package git yang konflik ke versi pub.dev; sebelumnya 2026-11-07.3: pub get: langkah C dependency_overrides 3 kandidat (git/host/any) dipilih lewat tes compile cepat, untuk konflik package git seperti better_player; sebelumnya 2026-11-07.2: dependency_overrides any; sebelumnya 2026-11-07.1: jenis jalur wajib eksplisit, tidak ada tebakan; sebelumnya 2026-11-04.4: build cepat: Flutter 1 keputusan tanpa uji satu-satu, build ZIP pakai jalur cepat 2 ABI + Gradle paralel; sebelumnya 2026-11-04.3: KHUSUS APK BIASA: cabang Gradle native/Genetic dihapus total dari workflow ini, Genetic hanya di build-android.yml; alur dispatch/payload/unduh ZIP/artifact apk-jobId mengikuti AMBIL_ALURGH; sebelumnya 2026-11-04.2 jalur dipisah via payload.projectType; 2026-11-04.1 alur Flutter mode ZIP disamakan dengan worker VPS; 2026-11-01.2 samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; 2026-10-27.2 tambah Free disk space)
+          # [bot-workflow] rev=2026-11-09.1 (resep build: build sukses menulis recipe.json (versi Flutter yang dipakai) dan mengunggahnya sebagai artifact recipe-jobId untuk dicatat bot; sebelumnya 2026-11-07.4: pub get: kandidat terakhir mengganti package git yang konflik ke versi pub.dev; sebelumnya 2026-11-07.3: pub get: langkah C dependency_overrides 3 kandidat (git/host/any) dipilih lewat tes compile cepat, untuk konflik package git seperti better_player; sebelumnya 2026-11-07.2: dependency_overrides any; sebelumnya 2026-11-07.1: jenis jalur wajib eksplisit, tidak ada tebakan; sebelumnya 2026-11-04.4: build cepat: Flutter 1 keputusan tanpa uji satu-satu, build ZIP pakai jalur cepat 2 ABI + Gradle paralel; sebelumnya 2026-11-04.3: KHUSUS APK BIASA: cabang Gradle native/Genetic dihapus total dari workflow ini, Genetic hanya di build-android.yml; alur dispatch/payload/unduh ZIP/artifact apk-jobId mengikuti AMBIL_ALURGH; sebelumnya 2026-11-04.2 jalur dipisah via payload.projectType; 2026-11-04.1 alur Flutter mode ZIP disamakan dengan worker VPS; 2026-11-01.2 samain alur AMBIL_ALURGH: payload url+tag, cek ZIP kosong, run-name=jobId; 2026-10-27.2 tambah Free disk space)
           # Tipe build: payload.buildType dulu (dikirim bot), cadangan input build_type, default release
           BUILD_TYPE=$(jq -r '.buildType // empty' payload.json)
           [ -z "$BUILD_TYPE" ] && BUILD_TYPE="${{ github.event.inputs.build_type }}"
@@ -1138,6 +1138,11 @@ jobs:
               fi
             fi
           fi
+          # Resep build: catat versi Flutter yang BENAR-BENAR dipakai build sukses (termasuk kalau tadi pindah ke versi cadangan)
+          if [ "$RC" -eq 0 ] && [ "$MODE" != "url" ]; then
+            FV_USED=$(flutter --version --machine 2>/dev/null | sed -n '/^{/,$p' | jq -r '.frameworkVersion // empty' 2>/dev/null || true)
+            if [ -n "$FV_USED" ]; then printf '{"flutter":"%s"}\n' "$FV_USED" > "$GITHUB_WORKSPACE/recipe.json"; echo "Resep: Flutter $FV_USED"; fi
+          fi
           exit $RC
 
       - name: Debug - scan all APK
@@ -1233,6 +1238,16 @@ jobs:
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
+
+      - name: Upload recipe (versi Flutter yang berhasil)
+        if: success() && hashFiles('recipe.json') != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: recipe-${{ github.event.inputs.jobId }}
+          path: recipe.json
+          retention-days: 1
+          if-no-files-found: ignore
 
       - name: Upload build log
         if: failure()
