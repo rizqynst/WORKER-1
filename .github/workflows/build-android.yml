@@ -33,8 +33,8 @@ jobs:
           echo "zip_public=$(echo "$PAYLOAD" | jq -r '.url // empty')" >> "$GITHUB_OUTPUT"
           echo "tag=$(echo "$PAYLOAD" | jq -r '.tag // empty')" >> "$GITHUB_OUTPUT"
           REQ=$(echo "$PAYLOAD" | jq -r '.projectType // empty')
-          if [ "$REQ" = "flutter" ]; then
-            echo "::error::Workflow ini khusus GENETIC (Android native). Mode yang dipilih KHUSUS APK BIASA (Flutter), seharusnya memakai workflow Flutter."
+          if [ "$REQ" != "android" ]; then
+            echo "::error::Workflow ini khusus GENETIC (Android native) dan wajib dipicu dengan projectType=android (diterima: '${REQ:-kosong}'). KHUSUS APK BIASA (Flutter) memakai workflow build-flutter.yml."
             exit 1
           fi
 
@@ -147,7 +147,23 @@ jobs:
           echo "org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8" >> gradle.properties
           # Java target 1.8 vs Kotlin 17 hanya jadi peringatan, bukan error
           echo "kotlin.jvm.target.validation.mode=warning" >> gradle.properties
-          if [ -f ./gradlew ]; then chmod +x ./gradlew && ./gradlew "$TASK" --no-daemon; else gradle "$TASK" --no-daemon; fi
+          # gradle-wrapper.jar hilang/rusak di ZIP -> "Could not find or load main class org.gradle.wrapper.GradleWrapperMain".
+          # Buat ulang wrapper dari versi di gradle-wrapper.properties; kalau gagal pakai gradle bawaan runner.
+          USE_SYSTEM_GRADLE=0
+          WJAR=gradle/wrapper/gradle-wrapper.jar
+          if [ -f ./gradlew ] && { [ ! -s "$WJAR" ] || ! unzip -tq "$WJAR" >/dev/null 2>&1; }; then
+            echo "⚠️ $WJAR hilang atau rusak, membuat ulang wrapper"
+            WV=$(grep 'distributionUrl' "$WP" 2>/dev/null | grep -oE 'gradle-[0-9]+(\.[0-9]+)+' | head -1 | sed 's/gradle-//' || true)
+            mkdir -p gradle/wrapper
+            if command -v gradle >/dev/null 2>&1 && gradle wrapper ${WV:+--gradle-version "$WV"} --no-daemon >/tmp/wrapper_regen.log 2>&1 && unzip -tq "$WJAR" >/dev/null 2>&1; then
+              echo "✅ Wrapper dibuat ulang (Gradle ${WV:-bawaan})"
+            else
+              tail -n 15 /tmp/wrapper_regen.log 2>/dev/null || true
+              echo "::warning::Gagal membuat ulang wrapper, pakai gradle bawaan runner"
+              USE_SYSTEM_GRADLE=1
+            fi
+          fi
+          if [ -f ./gradlew ] && [ "$USE_SYSTEM_GRADLE" = "0" ]; then chmod +x ./gradlew && ./gradlew "$TASK" --no-daemon; else gradle "$TASK" --no-daemon; fi
 
       - name: Kumpulkan APK
         run: |
