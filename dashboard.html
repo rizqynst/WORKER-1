@@ -1,0 +1,1020 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Dashboard BUILD RIZQY — kelola akses, key, dan tools build APK kamu.">
+  <title>Dashboard • BUILD RIZQY</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0e1a;
+      --bg-secondary: #111827;
+      --bg-card: rgba(17, 24, 39, 0.55);
+      --bg-card-solid: #111827;
+      --bg-input: rgba(15, 23, 42, 0.6);
+      /* ─── Warna Resmi Telegram, dipetakan sesuai fungsi tombol ───
+         primary  (#2AABEE -> #229ED9) : aksi utama / navigasi / link
+         success  (#31B545)            : aksi positif / konfirmasi
+         danger   (#E53935)            : aksi destruktif / peringatan
+         secondary(#8B98A5)            : aksi netral / kembali          */
+      --border-subtle: rgba(42, 171, 238, 0.14);
+      --border-active: rgba(42, 171, 238, 0.45);
+      --accent-primary: #2AABEE;
+      --accent-secondary: #229ED9;
+      --accent-glow: rgba(42, 171, 238, 0.25);
+      --accent-cyan: #229ED9;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --success: #31B545;
+      --success-bg: rgba(49, 181, 69, 0.1);
+      --warning: #8B98A5;
+      --warning-bg: rgba(139, 152, 165, 0.08);
+      --warning-border: rgba(139, 152, 165, 0.2);
+      --error: #E53935;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --radius-xl: 20px;
+      --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.2);
+      --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.3);
+      --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
+      --shadow-glow: 0 4px 16px rgba(42, 171, 238, 0.25);
+      --transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      --transition-normal: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+      --header-height: 72px;
+      --sidebar-width: 0px;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html {
+      font-size: 16px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ══════════════════════════════════════════════════════════ */
+    /*  HEADER                                                   */
+    /* ══════════════════════════════════════════════════════════ */
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      height: var(--header-height);
+      background: rgba(10, 14, 26, 0.8);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 32px;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .header-logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+    }
+
+    .header-logo svg {
+      width: 36px;
+      height: 36px;
+    }
+
+    .header-logo-text {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.3px;
+    }
+
+    .header-logo-text span {
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .header-divider {
+      width: 1px;
+      height: 28px;
+      background: var(--border-subtle);
+    }
+
+    .header-page-label {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .access-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(99, 102, 241, 0.1);
+      border: 1px solid rgba(99, 102, 241, 0.2);
+      padding: 6px 14px;
+      border-radius: 100px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent-primary);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .access-badge::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 6px var(--success);
+    }
+
+    .btn-logout {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      padding: 8px 18px;
+      border-radius: var(--radius-sm);
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .btn-logout:hover {
+      background: rgba(239, 68, 68, 0.08);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: var(--error);
+    }
+
+    .btn-logout svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* ══════════════════════════════════════════════════════════ */
+    /*  MAIN CONTENT                                             */
+    /* ══════════════════════════════════════════════════════════ */
+    .main-content {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px;
+      animation: fadeIn 0.6s ease forwards;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Section Title ── */
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 20px;
+      letter-spacing: -0.2px;
+    }
+
+    .section-title svg {
+      width: 20px;
+      height: 20px;
+      color: var(--accent-primary);
+    }
+
+    /* ══════════════════════════════════════════════════════════ */
+    /*  STATS ROW                                                */
+    /* ══════════════════════════════════════════════════════════ */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 20px;
+      margin-bottom: 32px;
+    }
+
+    .stat-card {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      transition: all var(--transition-normal);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .stat-card::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+      opacity: 0;
+      transition: opacity var(--transition-fast);
+    }
+
+    .stat-card:hover {
+      border-color: var(--border-active);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-glow);
+    }
+
+    .stat-card:hover::after {
+      opacity: 1;
+    }
+
+    .stat-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .stat-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .stat-icon svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .stat-icon.purple {
+      background: rgba(99, 102, 241, 0.12);
+      color: var(--accent-primary);
+    }
+
+    .stat-icon.green {
+      background: rgba(16, 185, 129, 0.12);
+      color: var(--success);
+    }
+
+    .stat-icon.cyan {
+      background: rgba(6, 182, 212, 0.12);
+      color: var(--accent-cyan);
+    }
+
+    .stat-value {
+      font-size: 32px;
+      font-weight: 800;
+      letter-spacing: -1px;
+      line-height: 1;
+      background: linear-gradient(135deg, var(--text-primary), var(--text-secondary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .stat-label {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 6px;
+      font-weight: 500;
+    }
+
+    /* ══════════════════════════════════════════════════════════ */
+    /*  CARDS                                                    */
+    /* ══════════════════════════════════════════════════════════ */
+    .card {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-xl);
+      padding: 28px;
+      margin-bottom: 28px;
+      transition: border-color var(--transition-normal);
+    }
+
+    .card:hover {
+      border-color: rgba(99, 102, 241, 0.2);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+    }
+
+    .card-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .card-title svg {
+      width: 20px;
+      height: 20px;
+      color: var(--accent-primary);
+    }
+
+    /* ── Access Key Display ── */
+    .key-display {
+      position: relative;
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 18px 24px;
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+      font-size: 20px;
+      font-weight: 500;
+      text-align: center;
+      letter-spacing: 4px;
+      color: var(--text-primary);
+      margin-bottom: 24px;
+      overflow: hidden;
+    }
+
+    .key-display::before {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent-primary), var(--accent-secondary), transparent);
+    }
+
+    /* ── Info Rows ── */
+    .info-table {
+      width: 100%;
+    }
+
+    .info-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 0;
+      border-bottom: 1px solid rgba(99, 102, 241, 0.06);
+    }
+
+    .info-row:last-child {
+      border-bottom: none;
+    }
+
+    .info-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .info-label svg {
+      width: 16px;
+      height: 16px;
+      opacity: 0.6;
+    }
+
+    .info-value {
+      font-size: 14px;
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .status-active {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--success);
+      font-weight: 600;
+    }
+
+    .status-active::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+      animation: statusPulse 2s ease-in-out infinite;
+    }
+
+    .status-expired {
+      color: var(--error);
+      font-weight: 600;
+    }
+
+    @keyframes statusPulse {
+      0%, 100% { box-shadow: 0 0 4px rgba(16, 185, 129, 0.3); }
+      50% { box-shadow: 0 0 12px rgba(16, 185, 129, 0.6); }
+    }
+
+    /* ══════════════════════════════════════════════════════════ */
+    /*  TOOLS GRID                                               */
+    /* ══════════════════════════════════════════════════════════ */
+    .tools-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+    }
+
+    .tool-card {
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 24px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all var(--transition-normal);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .tool-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.05), rgba(139, 92, 246, 0.05));
+      opacity: 0;
+      transition: opacity var(--transition-fast);
+    }
+
+    .tool-card:hover {
+      border-color: var(--border-active);
+      transform: translateY(-4px);
+      box-shadow: var(--shadow-glow);
+    }
+
+    .tool-card:hover::before {
+      opacity: 1;
+    }
+
+    .tool-card:active {
+      transform: translateY(-1px);
+    }
+
+    .tool-icon-wrapper {
+      width: 52px;
+      height: 52px;
+      margin: 0 auto 14px;
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      z-index: 1;
+    }
+
+    .tool-icon-wrapper svg {
+      width: 26px;
+      height: 26px;
+    }
+
+    .tool-icon-wrapper.globe {
+      background: rgba(99, 102, 241, 0.1);
+      color: var(--accent-primary);
+    }
+
+    .tool-icon-wrapper.archive {
+      background: rgba(139, 92, 246, 0.1);
+      color: var(--accent-secondary);
+    }
+
+    .tool-icon-wrapper.bot {
+      background: rgba(6, 182, 212, 0.1);
+      color: var(--accent-cyan);
+    }
+
+    .tool-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .tool-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ── Disabled State ── */
+    .disabled {
+      opacity: 0.4;
+      pointer-events: none;
+    }
+
+    /* ── Notice ── */
+    .notice {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      background: var(--warning-bg);
+      border: 1px solid var(--warning-border);
+      border-radius: var(--radius-md);
+      padding: 16px 20px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      color: var(--warning);
+      line-height: 1.6;
+    }
+
+    .notice svg {
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      margin-top: 1px;
+    }
+
+    .notice b {
+      font-weight: 600;
+    }
+
+    /* ══════════════════════════════════════════════════════════ */
+    /*  RESPONSIVE                                               */
+    /* ══════════════════════════════════════════════════════════ */
+    @media (max-width: 768px) {
+      .header {
+        padding: 0 16px;
+      }
+
+      .header-divider,
+      .header-page-label {
+        display: none;
+      }
+
+      .main-content {
+        padding: 20px 16px;
+      }
+
+      .stat-card {
+        padding: 20px;
+      }
+
+      .stat-value {
+        font-size: 26px;
+      }
+
+      .card {
+        padding: 20px;
+        border-radius: var(--radius-lg);
+      }
+
+      .key-display {
+        font-size: 16px;
+        letter-spacing: 2px;
+        padding: 14px 16px;
+      }
+
+      .tools-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .info-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .header-logo-text {
+        font-size: 16px;
+      }
+
+      .access-badge {
+        display: none;
+      }
+
+      .stats-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (min-width: 1600px) {
+      html {
+        font-size: 17px;
+      }
+    }
+
+    /* ── System Color Scheme Adaptation ── */
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg-primary: #f0f2f7;
+        --bg-secondary: #ffffff;
+        --bg-card: rgba(255, 255, 255, 0.8);
+        --bg-card-solid: #ffffff;
+        --bg-input: rgba(241, 245, 249, 0.8);
+        --border-subtle: rgba(42, 171, 238, 0.12);
+        --border-active: rgba(42, 171, 238, 0.35);
+        --text-primary: #1e293b;
+        --text-secondary: #475569;
+        --text-muted: #94a3b8;
+        --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.04);
+        --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.06);
+        --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.08);
+        --shadow-glow: 0 4px 16px rgba(99, 102, 241, 0.1);
+      }
+
+      .header {
+        background: rgba(240, 242, 247, 0.85);
+      }
+
+      .stat-value {
+        background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+    }
+
+    /* ── Scroll ── */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(99, 102, 241, 0.2);
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(99, 102, 241, 0.35);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ════════════════ HEADER ════════════════ -->
+  <header class="header">
+    <div class="header-left">
+      <a href="/dashboard" class="header-logo">
+        <!-- SVG Logo (same as login) -->
+        <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M32 4L8 16v16c0 14.4 10.24 27.84 24 32 13.76-4.16 24-17.6 24-32V16L32 4z" fill="url(#sg)" opacity="0.15"/>
+          <path d="M32 4L8 16v16c0 14.4 10.24 27.84 24 32 13.76-4.16 24-17.6 24-32V16L32 4z" stroke="url(#ss)" stroke-width="1.5" fill="none"/>
+          <path d="M32 18l-8 12h5v10h6V30h5L32 18z" fill="url(#ag)"/>
+          <circle cx="22" cy="44" r="2" fill="#6366f1" opacity="0.6">
+            <animate attributeName="opacity" values="0.3;1;0.3" dur="2s" repeatCount="indefinite"/>
+          </circle>
+          <circle cx="32" cy="48" r="2" fill="#8b5cf6" opacity="0.8">
+            <animate attributeName="opacity" values="0.3;1;0.3" dur="2s" begin="0.4s" repeatCount="indefinite"/>
+          </circle>
+          <circle cx="42" cy="44" r="2" fill="#a78bfa" opacity="0.6">
+            <animate attributeName="opacity" values="0.3;1;0.3" dur="2s" begin="0.8s" repeatCount="indefinite"/>
+          </circle>
+          <defs>
+            <linearGradient id="sg" x1="8" y1="4" x2="56" y2="64">
+              <stop offset="0%" stop-color="#6366f1"/>
+              <stop offset="100%" stop-color="#8b5cf6"/>
+            </linearGradient>
+            <linearGradient id="ss" x1="8" y1="4" x2="56" y2="64">
+              <stop offset="0%" stop-color="#6366f1"/>
+              <stop offset="100%" stop-color="#a78bfa"/>
+            </linearGradient>
+            <linearGradient id="ag" x1="24" y1="18" x2="40" y2="40">
+              <stop offset="0%" stop-color="#6366f1"/>
+              <stop offset="100%" stop-color="#8b5cf6"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <span class="header-logo-text">Build<span>Rizqy</span></span>
+      </a>
+      <div class="header-divider"></div>
+      <span class="header-page-label">Dashboard</span>
+    </div>
+    <div class="header-right">
+      <span class="access-badge" id="accessType">–</span>
+      <button class="btn-logout" onclick="logout()" id="logoutBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+          <polyline points="16 17 21 12 16 7"/>
+          <line x1="21" y1="12" x2="9" y2="12"/>
+        </svg>
+        Keluar
+      </button>
+    </div>
+  </header>
+
+  <!-- ════════════════ MAIN ════════════════ -->
+  <main class="main-content">
+
+    <!-- ── Statistics ── -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-header">
+          <div class="stat-icon purple">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+              <line x1="16" y1="2" x2="16" y2="6"/>
+              <line x1="8" y1="2" x2="8" y2="6"/>
+              <line x1="3" y1="10" x2="21" y2="10"/>
+            </svg>
+          </div>
+        </div>
+        <div class="stat-value" id="daysLeft">–</div>
+        <div class="stat-label">Sisa Masa Aktif (hari)</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-header">
+          <div class="stat-icon green">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+            </svg>
+          </div>
+        </div>
+        <div class="stat-value">0</div>
+        <div class="stat-label">Total Build Kamu</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-header">
+          <div class="stat-icon cyan">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+              <line x1="12" y1="22.08" x2="12" y2="12"/>
+            </svg>
+          </div>
+        </div>
+        <div class="stat-value">0</div>
+        <div class="stat-label">APK Berhasil Dibuat</div>
+      </div>
+    </div>
+
+    <!-- ── Access Info Card ── -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+          </svg>
+          Info Akses Kamu
+        </h2>
+      </div>
+
+      <div class="key-display" id="keyDisplay">–</div>
+
+      <div class="info-table">
+        <div class="info-row">
+          <span class="info-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+              <circle cx="12" cy="7" r="4"/>
+            </svg>
+            Telegram ID
+          </span>
+          <span class="info-value" id="telegramId">–</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+            </svg>
+            Username
+          </span>
+          <span class="info-value" id="username">–</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+              <polyline points="22 4 12 14.01 9 11.01"/>
+            </svg>
+            Status
+          </span>
+          <span class="info-value status-active" id="status">Aktif</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+            Berlaku sampai
+          </span>
+          <span class="info-value" id="expired">–</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Tools Card ── -->
+    <div class="card" id="toolsCard">
+      <div class="card-header">
+        <h2 class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+          </svg>
+          Tools
+        </h2>
+      </div>
+
+      <div class="tools-grid" id="toolsGrid">
+        <div class="tool-card" onclick="openUrlToApk()" id="toolUrlToApk">
+          <div class="tool-icon-wrapper globe">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="2" y1="12" x2="22" y2="12"/>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+            </svg>
+          </div>
+          <div class="tool-name">URL to APK</div>
+          <div class="tool-desc">Ubah website jadi APK</div>
+        </div>
+
+        <div class="tool-card" onclick="openZipBuilder()" id="toolZipBuilder">
+          <div class="tool-icon-wrapper archive">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 8v13H3V8"/>
+              <path d="M1 3h22v5H1z"/>
+              <path d="M10 12h4"/>
+            </svg>
+          </div>
+          <div class="tool-name">ZIP Builder</div>
+          <div class="tool-desc">Build APK dari project ZIP</div>
+        </div>
+
+        <div class="tool-card" id="botTools">
+          <div class="tool-icon-wrapper bot">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7v1a2 2 0 0 1 0 4v1a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-1a2 2 0 0 1 0-4v-1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/>
+              <circle cx="9.5" cy="14.5" r="1.5" fill="currentColor"/>
+              <circle cx="14.5" cy="14.5" r="1.5" fill="currentColor"/>
+            </svg>
+          </div>
+          <div class="tool-name">Bot Tools</div>
+          <div class="tool-desc">Lengkapnya ada di bot Telegram</div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    let memberData = null;
+    let accessKey = null;
+
+    // ── Device ID ──
+    function getDeviceId() {
+      return localStorage.getItem('deviceId') || '';
+    }
+
+    // ── Check Session ──
+    async function checkSession() {
+      accessKey = localStorage.getItem('accessKey');
+      const deviceId = getDeviceId();
+
+      if (!accessKey) {
+        window.location.href = '/login';
+        return;
+      }
+
+      try {
+        const response = await fetch(`/api/auth/verify?key=${accessKey}&deviceId=${deviceId}`);
+        const data = await response.json();
+
+        if (!data.valid) {
+          localStorage.removeItem('accessKey');
+          window.location.href = '/login';
+          return;
+        }
+
+        memberData = data.member;
+        updateUI();
+      } catch (err) {
+        console.error('Session check failed:', err);
+        window.location.href = '/login';
+      }
+    }
+
+    // ── Update UI ──
+    function updateUI() {
+      if (!memberData) return;
+
+      document.getElementById('keyDisplay').textContent = accessKey;
+      document.getElementById('accessType').textContent = memberData.accessType || 'ALL';
+      document.getElementById('telegramId').textContent = memberData.telegramId || '–';
+      document.getElementById('username').textContent = memberData.username || '–';
+
+      // Calculate days left
+      const expiresAt = new Date(memberData.expiresAt);
+      const now = new Date();
+      const daysLeft = Math.ceil((expiresAt - now) / (1000 * 60 * 60 * 24));
+      document.getElementById('daysLeft').textContent = daysLeft > 0 ? daysLeft : 0;
+      document.getElementById('expired').textContent = expiresAt.toLocaleDateString('id-ID', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
+      });
+
+      // Handle expired
+      if (daysLeft <= 0) {
+        const statusEl = document.getElementById('status');
+        statusEl.textContent = 'Sudah berakhir';
+        statusEl.className = 'info-value status-expired';
+      }
+
+      // Handle access type restrictions
+      const accessType = memberData.accessType || 'all';
+      if (accessType === 'bot') {
+        document.getElementById('toolsGrid').classList.add('disabled');
+        const notice = document.createElement('div');
+        notice.className = 'notice';
+        notice.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <span>Key ini khusus untuk <b>bot Telegram</b>. Yuk, build langsung lewat bot ya!</span>
+        `;
+        document.getElementById('toolsCard').insertBefore(notice, document.getElementById('toolsGrid'));
+      }
+    }
+
+    // ── Logout ──
+    async function logout() {
+      const deviceId = getDeviceId();
+
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: accessKey, deviceId })
+        });
+      } catch (err) {
+        console.error('Logout error:', err);
+      }
+
+      localStorage.removeItem('accessKey');
+      window.location.href = '/login';
+    }
+
+    // ── Tool Functions ──
+    function openUrlToApk() {
+      alert('Fitur URL to APK di web segera hadir ✨ Sementara ini pakai bot Telegram dulu ya.');
+    }
+
+    function openZipBuilder() {
+      alert('Fitur ZIP Builder di web segera hadir ✨ Sementara ini pakai bot Telegram dulu ya.');
+    }
+
+    // ── Init ──
+    checkSession();
+
+    // Periodic session check (every 5 minutes)
+    setInterval(checkSession, 5 * 60 * 1000);
+  </script>
+</body>
+</html>
